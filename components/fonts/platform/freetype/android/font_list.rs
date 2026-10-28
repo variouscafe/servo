@@ -110,6 +110,10 @@ struct Font {
     filename: String,
     weight: Option<i32>,
     style: Option<String>,
+    /// Face inside a .ttc collection — modern fonts.xml keys the CJK
+    /// faces this way (`index="1"` = the Korean face of
+    /// NotoSansCJK-Regular.ttc).
+    face_index: u16,
 }
 
 struct FontFamily {
@@ -218,6 +222,7 @@ impl FontList {
                     filename: item.1.into(),
                     weight: None,
                     style: None,
+                    face_index: 0,
                 }],
             })
             .collect()
@@ -264,9 +269,21 @@ impl FontList {
             return;
         }
 
-        // Parse family name
+        // Parse family name. Modern fonts.xml carries the CJK
+        // per-language entries with NO name= — only lang=:
+        //   <family lang="ko"><font index="1">NotoSansCJK…ttc</font>…
+        // Dropping those (the old behavior) leaves the whole CJK
+        // range without a system fallback: Hangul renders as tofu on
+        // every current device. Register them under their first
+        // lang token ("ko", "ja", "zh-Hans", …) — the fallback table
+        // below looks those names up directly.
         let name = if let Some(name) = Self::find_attrib("name", attrs) {
             name
+        } else if let Some(lang) = Self::find_attrib("lang", attrs) {
+            match lang.split(',').next() {
+                Some(token) if !token.is_empty() => token.to_string(),
+                _ => return,
+            }
         } else {
             return;
         };
@@ -327,6 +344,7 @@ impl FontList {
                     filename: f.clone(),
                     weight: None,
                     style: None,
+                    face_index: 0,
                 })
                 .collect();
 
@@ -344,11 +362,14 @@ impl FontList {
             // Parse font weight
             let weight = Self::find_attrib("weight", attrs).and_then(|w| w.parse().ok());
             let style = Self::find_attrib("style", attrs);
+            let face_index =
+                Self::find_attrib("index", attrs).and_then(|i| i.parse().ok()).unwrap_or(0);
 
             out.push(Font {
                 filename,
                 weight,
                 style,
+                face_index,
             })
         }
     }
@@ -432,7 +453,7 @@ where
     let mut produce_font = |font: &Font| {
         let local_font_identifier = LocalFontIdentifier {
             path: Atom::from(FontList::font_absolute_path(&font.filename)),
-            face_index: 0,
+            face_index: font.face_index,
             named_instance_index: 0,
         };
         let width = StyleFontWidth::NORMAL;
@@ -563,9 +584,20 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
 
             _ => {
                 if is_cjk(options.character) {
+                    // Hangul first (the Korean face of the CJK
+                    // collection — lang-token names come from the
+                    // parse_family registration of nameless modern
+                    // fonts.xml entries, the Noto names cover older
+                    // devices that name the families explicitly).
+                    let hangul = matches!(options.character, '\u{AC00}'..='\u{D7A3}');
+                    if hangul {
+                        families.push("ko");
+                        families.push("Noto Sans CJK KR");
+                    }
                     families.push("MotoyaLMaru");
                     families.push("Noto Sans CJK JP");
                     families.push("Droid Sans Japanese");
+                    families.push("ja");
                 }
             },
         }
