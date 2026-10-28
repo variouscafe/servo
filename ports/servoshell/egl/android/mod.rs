@@ -116,6 +116,12 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
             "script::dom::bindings::error",
             // Show GL errors by default.
             "servo_canvas::webgl_thread",
+            // namsan 진단(2026-10-29): WebGPU 어댑터 열거·거부 사유가 logcat에
+            // 보이도록 servo_webgpu와 wgpu 계열 모듈을 기본 개방.
+            "servo_webgpu",
+            "wgpu_core",
+            "wgpu_hal",
+            "naga",
             "paint::paint",
             "servo_constellation::constellation",
         ];

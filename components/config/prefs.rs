@@ -500,7 +500,11 @@ impl Preferences {
                 cfg!(target_env = "ohos"),
             dom_transient_activation_duration_ms: 5000,
             dom_web_animations_enabled: false,
-            dom_webgl2_enabled: false,
+            // namsan(0.1.3 후보): WebGL2는 항상 켠다. WebGPU는 실기 폰 GPU 경로의
+            // 인스턴싱·MSAA 깨짐(terrafolk 민트, 2026-10-28)과 에뮬 정지까지 재현돼
+            // 기본을 끈다 — wgpu-web 폴백 앱은 WebGL2(검증 스택)로 구동된다.
+            // 5호(폰 백엔드 버그) 수정 후 true 복원 예정.
+            dom_webgl2_enabled: true,
             dom_webgpu_enabled: false,
             dom_webgpu_wgpu_backend: String::new(),
             dom_webrtc_enabled: false,

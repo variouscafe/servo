@@ -91,7 +91,10 @@ impl WGPU {
     ) -> Self {
         let backend_pref = pref!(dom_webgpu_wgpu_backend);
         let backends = if backend_pref.is_empty() {
-            wgpu_types::Backends::PRIMARY
+            // namsan(0.1.2): 기본 백엔드를 GL 단독으로 — 실기 폰 GPU의 Vulkan
+            // 경로에서 인스턴싱·MSAA 드로우가 깨지는(terrafolk 민트 깨짐, 2026-10-28
+            // 실기 보고) 회피. GL(GLES)은 에뮬 ANGLE·llvmpipe 전 검증 경로.
+            wgpu_types::Backends::from_comma_list("gl")
         } else {
             info!(
                 "Selecting backends based on dom.webgpu.wgpu_backend pref: {:?}",
@@ -115,9 +118,12 @@ impl WGPU {
                     noop: wgpu_types::NoopBackendOptions::default(),
                 },
 
+                // namsan 진단(2026-10-29): STRICT_WEBGPU_COMPLIANCE는 다운레벨
+                // 플래그가 조금이라도 부족한 어댑터(에뮬레이터 llvmpipe:
+                // SURFACE_VIEW_FORMATS|SHADER_F16_IN_F32 결격)를 탈락시켜 에뮬에서
+                // 어댑터가 0개가 되는 원인이었다. 진단·개발 편의로 끈다.
                 flags: wgpu_types::InstanceFlags::from_build_config() |
-                    wgpu_types::InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION |
-                    wgpu_types::InstanceFlags::STRICT_WEBGPU_COMPLIANCE,
+                    wgpu_types::InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION,
                 // TODO(sagudev): firefox actually sets this, but it can cause OOM for us
                 // meaning that we are likely leaking something
                 memory_budget_thresholds: wgpu_types::MemoryBudgetThresholds {
@@ -552,6 +558,11 @@ impl WGPU {
                             })
                             .map_err(|err| err.to_string());
 
+                        // namsan 진단(0.1.1): request_adapter 판정 기록
+                        match &response {
+                            Ok(_) => warn!("namsan-diag: request_adapter 성공"),
+                            Err(err) => warn!("namsan-diag: request_adapter 실패: {err}"),
+                        }
                         if let Err(e) = sender.send(Some(response)) {
                             warn!(
                                 "Failed to send response to WebGPURequest::RequestAdapter ({})",
