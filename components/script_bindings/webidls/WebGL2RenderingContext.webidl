@@ -331,21 +331,15 @@ interface mixin WebGL2RenderingContextBase
   //                GLsizei depth, GLint border, GLenum format, GLenum type, [AllowShared] ArrayBufferView srcData,
   //                GLuint srcOffset);
 
-  //[Throws]
-  //void texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
-  //                   GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
-  //                   GLintptr pboOffset);
-  //[Throws]
-  //void texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
-  //                   GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
-  //                   TexImageSource source); // May throw DOMException
-  //[Throws]
-  //void texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
-  //                   GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
-  //                   [AllowShared] ArrayBufferView? srcData, optional GLuint srcOffset = 0);
+  // namsan-spike: ArrayBufferView 오버로드만 구현(wgpu-web의 2D 배열 텍스처
+  // 업로드 경로). pboOffset·TexImageSource 오버로드는 미구현 상태 유지.
+  [Throws]
+  undefined texSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                   GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type,
+                   /*[AllowShared]*/ ArrayBufferView? srcData);
 
-  //void copyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
-  //                       GLint x, GLint y, GLsizei width, GLsizei height);
+  undefined copyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset,
+                       GLint x, GLint y, GLsizei width, GLsizei height);
 
   //void compressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width,
   //                          GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, GLintptr offset);

@@ -658,6 +658,11 @@ impl ImageInfo {
         self.height
     }
 
+    // namsan-spike: texSubImage3D의 zoffset 경계 검증에 필요
+    pub(crate) fn depth(&self) -> u32 {
+        self.depth
+    }
+
     pub(crate) fn internal_format(&self) -> TexFormat {
         self.internal_format
     }

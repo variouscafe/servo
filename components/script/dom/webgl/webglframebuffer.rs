@@ -287,18 +287,23 @@ impl WebGLFramebuffer {
         if self.check_status() != constants::FRAMEBUFFER_COMPLETE {
             return Err(WebGLError::InvalidFramebufferOperation);
         }
-        let color = match self.attachment(constants::COLOR_ATTACHMENT0) {
-            Some(WebGLFramebufferAttachmentRoot::Renderbuffer(rb)) => Some(rb.internal_format()),
-            _ => None,
+        // namsan-spike: 텍스처 첨부도 형식을 보고한다. 기존엔 renderbuffer만
+        // 인식(나머진 None)해서 blitFramebuffer의 src/dst 형식 비교에서
+        // MSAA renderbuffer → texture 해결 경로(wgpu 웹 렌더러의 상수 패턴)가
+        // 항시 INVALID_OPERATION로 죽었다 — 화면에 clear 색만 남는 원인.
+        let format_of = |attachment: u32| -> Option<u32> {
+            let binding = self.attachment_binding(attachment)?;
+            let binding = binding.borrow();
+            match binding.as_ref()? {
+                WebGLFramebufferAttachment::Renderbuffer(rb) => Some(rb.internal_format()),
+                WebGLFramebufferAttachment::Texture { texture, level } => texture
+                    .image_info_at_face(0, u32::try_from(*level).ok()?)
+                    .map(|info| info.internal_format().as_gl_constant()),
+            }
         };
-        let depth = match self.attachment(constants::DEPTH_ATTACHMENT) {
-            Some(WebGLFramebufferAttachmentRoot::Renderbuffer(rb)) => Some(rb.internal_format()),
-            _ => None,
-        };
-        let stencil = match self.attachment(constants::STENCIL_ATTACHMENT) {
-            Some(WebGLFramebufferAttachmentRoot::Renderbuffer(rb)) => Some(rb.internal_format()),
-            _ => None,
-        };
+        let color = format_of(constants::COLOR_ATTACHMENT0);
+        let depth = format_of(constants::DEPTH_ATTACHMENT);
+        let stencil = format_of(constants::STENCIL_ATTACHMENT);
         Ok((color, depth, stencil))
     }
 

@@ -55,7 +55,8 @@ use crate::dom::webgl::validations::tex_image_2d::{
     TexImage2DValidator, TexImage2DValidatorResult, TexStorageValidator, TexStorageValidatorResult,
 };
 use crate::dom::webgl::validations::tex_image_3d::{
-    TexImage3DValidator, TexImage3DValidatorResult,
+    CommonTexImage3DValidator, CommonTexImage3DValidatorResult, TexImage3DValidator,
+    TexImage3DValidatorResult,
 };
 use crate::dom::webgl::vertexarrayobject::VertexAttribPointerKind;
 use crate::dom::webgl::webglactiveinfo::WebGLActiveInfo;
@@ -289,19 +290,23 @@ impl WebGL2RenderingContext {
         ];
         let vao = self.current_vao(cx);
         for prog_attrib in program.active_attribs().iter() {
+            // namsan-spike: gl_* 내장(gl_InstanceID 등)은 location이 None이고 VAO
+            // 슬롯이 없다. 드라이버가 active attrib 목록에 내장을 올리는 경우
+            // (맥 에뮬레이터 번역기 등) 기존 코드는 get_vertex_attrib(u32::MAX)로
+            // 모든 드로우를 INVALID_OPERATION으로 죽였다 — wgpu/Bevy 셰이더는
+            // gl_InstanceID를 항상 사용하므로 월드가 통째로 안 그려졌음.
+            let Some(location) = prog_attrib.location else {
+                continue;
+            };
             let attrib = handle_potential_webgl_error!(
                 self.base,
                 // TODO(#34300): remove unwrap
-                vao.get_vertex_attrib(prog_attrib.location.unwrap_or(u32::MAX))
-                    .ok_or(InvalidOperation),
+                vao.get_vertex_attrib(location).ok_or(InvalidOperation),
                 return
             );
 
             // TODO(#34300): remove unwrap
-            let current_vertex_attrib = self.base.current_vertex_attribs()[prog_attrib
-                .location
-                .map(|l| l as usize)
-                .unwrap_or(usize::MAX)];
+            let current_vertex_attrib = self.base.current_vertex_attribs()[location as usize];
             // The base type comes from the call that set the attribute:
             //
             // https://registry.khronos.org/webgl/specs/latest/2.0/#ATTRIBUTE_TYPE_MATCH
@@ -971,6 +976,73 @@ impl WebGL2RenderingContext {
         if let Some(fb) = self.base.bound_draw_framebuffer() {
             fb.invalidate_texture(texture);
         }
+    }
+
+    // namsan-spike: base.tex_sub_image_2d의 3D 확장 — wgpu(glow)가 2D 배열
+    // 텍스처 부분 업로드에 사용. zoffset/depth 경계 검증이 추가된다.
+    fn tex_sub_image_3d(
+        &self,
+        texture: &WebGLTexture,
+        target: TexImageTarget,
+        level: u32,
+        xoffset: i32,
+        yoffset: i32,
+        zoffset: i32,
+        depth: u32,
+        format: TexFormat,
+        data_type: TexDataType,
+        unpacking_alignment: u32,
+        pixels: TexPixels,
+    ) {
+        // We have already validated level
+        let image_info = match texture.image_info_for_target(&target, level) {
+            Some(info) => info,
+            None => return self.base.webgl_error(InvalidOperation),
+        };
+
+        // GL_INVALID_VALUE is generated if:
+        //   - xoffset, yoffset or zoffset is less than 0
+        //   - x offset plus the width is greater than the texture width
+        //   - y offset plus the height is greater than the texture height
+        //   - z offset plus the depth is greater than the texture depth
+        if xoffset < 0 ||
+            (xoffset as u32 + pixels.size().width) > image_info.width() ||
+            yoffset < 0 ||
+            (yoffset as u32 + pixels.size().height) > image_info.height() ||
+            zoffset < 0 ||
+            (zoffset as u32 + depth) > image_info.depth()
+        {
+            return self.base.webgl_error(InvalidValue);
+        }
+
+        // The unsized format must be compatible with the sized internal format
+        debug_assert!(!format.is_sized());
+        if format != image_info.internal_format().to_unsized() {
+            return self.base.webgl_error(InvalidOperation);
+        }
+
+        let effective_data_type = self
+            .base
+            .extension_manager()
+            .effective_type(data_type.as_gl_constant());
+
+        self.base.send_command(WebGLCommand::TexSubImage3D {
+            target: target.as_gl_constant(),
+            level,
+            xoffset,
+            yoffset,
+            zoffset,
+            size: pixels.size(),
+            depth,
+            format,
+            data_type,
+            effective_data_type,
+            unpacking_alignment,
+            alpha_treatment: pixels.alpha_treatment(),
+            y_axis_treatment: pixels.y_axis_treatment(),
+            pixel_format: pixels.pixel_format(),
+            data: pixels.into_shared_memory().into(),
+        });
     }
 }
 
@@ -1802,6 +1874,80 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
     ) {
         self.base
             .CopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height)
+    }
+
+    // namsan-spike: <https://www.khronos.org/registry/webgl/specs/latest/2.0/#5.16.4>
+    // base.CopyTexSubImage2D의 3D 확장 — 검증은 CommonTexImage3DValidator 재사용.
+    fn CopyTexSubImage3D(
+        &self,
+        target: u32,
+        level: i32,
+        xoffset: i32,
+        yoffset: i32,
+        zoffset: i32,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) {
+        handle_potential_webgl_error!(self.base, self.base.validate_read_framebuffer(), return);
+
+        // NB: We use a dummy (valid) format and border in order to reuse the
+        // common validations, but this should have its own validator.
+        let validator = CommonTexImage3DValidator::new(
+            &self.base,
+            target,
+            level,
+            TexFormat::RGBA.as_gl_constant(),
+            width,
+            height,
+            1,
+            0,
+        );
+        let CommonTexImage3DValidatorResult {
+            texture,
+            target,
+            level,
+            width,
+            height,
+            ..
+        } = match validator.validate() {
+            Ok(result) => result,
+            Err(_) => return, // NB: The validator sets the correct error for us.
+        };
+
+        let image_info = match texture.image_info_for_target(&target, level) {
+            Some(info) => info,
+            None => return self.base.webgl_error(InvalidOperation),
+        };
+
+        // GL_INVALID_VALUE is generated if:
+        //   - xoffset, yoffset or zoffset is less than 0
+        //   - x offset plus the width is greater than the texture width
+        //   - y offset plus the height is greater than the texture height
+        //   - zoffset is not less than the texture depth
+        if xoffset < 0 ||
+            (xoffset as u32 + width) > image_info.width() ||
+            yoffset < 0 ||
+            (yoffset as u32 + height) > image_info.height() ||
+            zoffset < 0 ||
+            zoffset as u32 >= image_info.depth()
+        {
+            self.base.webgl_error(InvalidValue);
+            return;
+        }
+
+        self.base.send_command(WebGLCommand::CopyTexSubImage3D(
+            target.as_gl_constant(),
+            level as i32,
+            xoffset,
+            yoffset,
+            zoffset,
+            x,
+            y,
+            width as i32,
+            height as i32,
+        ));
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.11>
@@ -3305,6 +3451,156 @@ impl WebGL2RenderingContextMethods<crate::DomTypeHolder> for WebGL2RenderingCont
             height,
             depth,
             border,
+            unpacking_alignment,
+            tex_source,
+        );
+        Ok(())
+    }
+
+    // namsan-spike: <https://www.khronos.org/registry/webgl/specs/latest/2.0/#5.16.4>
+    // texImage3D + base.TexSubImage2D 패턴 준용 — 검증은 TexImage3DValidator
+    // (internal_format 슬롯에 unsized format을 넣는 2D와 동일 트릭).
+    fn TexSubImage3D(
+        &self,
+        no_gc: &NoGC,
+        target: u32,
+        level: i32,
+        xoffset: i32,
+        yoffset: i32,
+        zoffset: i32,
+        width: i32,
+        height: i32,
+        depth: i32,
+        format: u32,
+        type_: u32,
+        src_data: CustomAutoRooterGuard<Option<ArrayBufferView>>,
+    ) -> Fallible<()> {
+        // If a WebGLBuffer is bound to the PIXEL_UNPACK_BUFFER target,
+        // generates an INVALID_OPERATION error.
+        if self.bound_pixel_unpack_buffer.get().is_some() {
+            self.base.webgl_error(InvalidOperation);
+            return Ok(());
+        }
+
+        // If type is specified as FLOAT_32_UNSIGNED_INT_24_8_REV, srcData must be null;
+        // otherwise, generates an INVALID_OPERATION error.
+        if type_ == constants::FLOAT_32_UNSIGNED_INT_24_8_REV && src_data.is_some() {
+            self.base.webgl_error(InvalidOperation);
+            return Ok(());
+        }
+
+        let Ok(TexImage3DValidatorResult {
+            width,
+            height,
+            depth,
+            level,
+            texture,
+            target,
+            format,
+            data_type,
+            ..
+        }) = TexImage3DValidator::new(
+            &self.base,
+            target,
+            level,
+            format,
+            width,
+            height,
+            depth,
+            0,
+            format,
+            type_,
+            &src_data,
+        )
+        .validate()
+        else {
+            return Ok(());
+        };
+
+        // texSubImage3D는 srcData가 필수다(texImage3D처럼 0으로 채울 수 없음).
+        let data = handle_potential_webgl_error!(
+            self.base,
+            src_data
+                .as_ref()
+                .map(|p| p.as_slice_safe(no_gc).unwrap_or(&[]))
+                .ok_or(InvalidValue),
+            return Ok(())
+        );
+        let unpacking_alignment = self.base.texture_unpacking_alignment();
+        let element_size = data_type.element_size();
+        let components_per_element = data_type.components_per_element();
+        let components = format.components();
+        // NOTE: width, height and depth are positive or zero due to validate()
+        let expected_byte_len = if height == 0 {
+            0
+        } else {
+            // texImage3D와 동일한 계산 — 마지막 행·이미지의 언팩 패딩은 제외.
+            let cpp = element_size * components / components_per_element;
+            let mut padding_bytes = (cpp * width) % unpacking_alignment;
+            if padding_bytes > 0 {
+                padding_bytes = unpacking_alignment - padding_bytes;
+            }
+            let bytes_per_row = cpp * width + padding_bytes;
+            let bytes_last_row = cpp * width;
+            let bytes_per_image = bytes_per_row * height;
+            let bytes_last_image = bytes_per_row * (height - 1) + bytes_last_row;
+            bytes_per_image * (depth - 1) + bytes_last_image
+        };
+
+        let block = match self.base.unpack_block(
+            data,
+            width,
+            height,
+            Some(depth),
+            bytes_per_pixel(format, data_type),
+        ) {
+            Ok(block) => block,
+            Err(()) => return Ok(()),
+        };
+        let buff = GenericSharedMemory::from_bytes(&block);
+
+        // From the WebGL spec:
+        //
+        //     "If pixels is non-null but its size is less than what
+        //      is required by the specified width, height, format,
+        //      type, and pixel storage parameters, generates an
+        //      INVALID_OPERATION error."
+        if buff.len() < expected_byte_len as usize {
+            return {
+                self.base.webgl_error(InvalidOperation);
+                Ok(())
+            };
+        }
+
+        let (alpha_treatment, y_axis_treatment) =
+            self.base.get_current_unpack_state(Alpha::NotPremultiplied);
+        // If UNPACK_FLIP_Y_WEBGL or UNPACK_PREMULTIPLY_ALPHA_WEBGL is set to true, texImage3D and texSubImage3D
+        // generate an INVALID_OPERATION error if they upload data from a PIXEL_UNPACK_BUFFER or a non-null client
+        // side ArrayBufferView.
+        if let (Some(AlphaTreatment::Premultiply), YAxisTreatment::Flipped) =
+            (alpha_treatment, y_axis_treatment)
+        {
+            self.base.webgl_error(InvalidOperation);
+            return Ok(());
+        }
+
+        let tex_source = TexPixels::from_array(
+            buff,
+            Size2D::new(width, height),
+            alpha_treatment,
+            y_axis_treatment,
+        );
+
+        self.tex_sub_image_3d(
+            &texture,
+            target,
+            level,
+            xoffset,
+            yoffset,
+            zoffset,
+            depth,
+            format,
+            data_type,
             unpacking_alignment,
             tex_source,
         );
