@@ -951,6 +951,23 @@ impl ReadableStream {
 
     /// Used as part of
     /// <https://streams.spec.whatwg.org/#set-up-readable-stream-default-controller>
+    /// 본체 근원이 네이티브(Rust) 소스인지. `new Response(jsStream)`처럼
+    /// JS·TransformStream·Tee 소스로 만들어진 스트림은 false — 이 스트림을
+    /// WASM 스트리밍 컴파일 등에서 소비하려면 펌프가 직접 읽어야 한다.
+    pub(crate) fn is_native_backed(&self) -> bool {
+        match self.controller.borrow().as_ref() {
+            Some(ControllerType::Default(controller)) => controller
+                .get()
+                .map(|controller| controller.is_native_source())
+                .unwrap_or(false),
+            Some(ControllerType::Byte(controller)) => controller
+                .get()
+                .map(|controller| controller.is_native_source())
+                .unwrap_or(false),
+            None => false,
+        }
+    }
+
     pub(crate) fn set_default_controller(&self, controller: &ReadableStreamDefaultController) {
         *self.controller.borrow_mut() = Some(ControllerType::Default(MutNullableDom::new(Some(
             controller,

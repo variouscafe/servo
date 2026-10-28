@@ -545,6 +545,32 @@ impl Response {
         }
     }
 
+    /// 내부 바디 스트림 접근 — WASM 스트리밍 컨슈머의 JS 소스 펌프용.
+    pub(crate) fn fetch_body_stream(&self) -> Option<DomRoot<ReadableStream>> {
+        self.fetch_body_stream.get()
+    }
+
+    /// 아래 3종은 JS 소스 스트림 펌프(script_runtime) 전용 전달 경로다.
+    /// 네트워크 백드의 stream_chunk/finish와 달리 JS 스트림 원본을 건드리지
+    /// 않고 컨슈머에게만 보낸다.
+    pub(crate) fn stream_wasm_chunk(&self, chunk: Vec<u8>) {
+        if let Some(consumer) = self.stream_consumer.borrow().as_ref() {
+            consumer.consume_chunk(&chunk);
+        }
+    }
+
+    pub(crate) fn stream_wasm_end(&self) {
+        if let Some(consumer) = self.stream_consumer.borrow_mut().take() {
+            consumer.stream_end();
+        }
+    }
+
+    pub(crate) fn stream_wasm_error(&self, error_code: usize) {
+        if let Some(consumer) = self.stream_consumer.borrow_mut().take() {
+            consumer.stream_error(error_code);
+        }
+    }
+
     pub(crate) fn set_stream_consumer(&self, sc: Option<StreamConsumer>) {
         *self.stream_consumer.borrow_mut() = sc;
     }

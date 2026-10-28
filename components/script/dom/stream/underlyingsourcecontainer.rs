@@ -139,6 +139,19 @@ impl UnderlyingSourceContainer {
         )
     }
 
+    /// 백엔드가 Rust 네이티브 소스(메모리·Blob·fetch 응답·전송)인지.
+    /// JS 객체·TransformStream·Tee 소스면 false — 이 스트림은 네트워크
+    /// 이벤트가 청크를 밀어주지 않아 소비자 펌프가 별도로 필요하다.
+    pub(crate) fn is_native(&self) -> bool {
+        matches!(
+            &self.underlying_source_type,
+            UnderlyingSource::Memory(_) |
+                UnderlyingSource::Blob(_) |
+                UnderlyingSource::FetchResponse |
+                UnderlyingSource::Transfer(_)
+        )
+    }
+
     /// Setting the JS object after the heap has settled down.
     pub(crate) fn set_underlying_source_this_object(&self, object: HandleObject) {
         if let UnderlyingSource::Js(_source, this_obj) = &self.underlying_source_type {

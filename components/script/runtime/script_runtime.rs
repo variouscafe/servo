@@ -31,7 +31,7 @@ use js::glue::{
 use js::jsapi::{
     AsmJSOption, BuildIdCharVector, CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
     GCOptions, GCProgress, GCReason, Handle as RawHandle, HandleObject, HandleString,
-    HandleValue as RawHandleValue, Heap, JSContext as RawJSContext, JSGCParamKey, JSGCStatus,
+    HandleValue as RawHandleValue, Heap, JSContext as RawJSContext, JSErrNum, JSGCParamKey, JSGCStatus,
     JSJitCompilerOption, JSObject, JSSecurityCallbacks, JSString, JSTracer, MimeType,
     MutableHandleString, PromiseRejectionHandlingState, RuntimeCode,
     ScriptEnvironmentPreparer_Closure, SetProcessBuildIdOp, StreamConsumer as JSStreamConsumer,
@@ -88,6 +88,11 @@ use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::promise::Promise;
 use crate::dom::promiserejectionevent::PromiseRejectionEvent;
+use crate::dom::bindings::root::Dom;
+use crate::dom::promisenativehandler::{Callback, PromiseNativeHandler};
+use crate::dom::readablestream::{
+    ReadableStream, get_read_promise_bytes, get_read_promise_done,
+};
 use crate::dom::response::Response;
 use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::dom::window::Window;
@@ -1256,6 +1261,81 @@ impl StreamConsumer {
     }
 }
 
+/// WASM 스트리밍 컴파일러로 들어가는 JS 소스 스트림의 청크 펌프.
+///
+/// 네트워크 백드 응답은 fetch 데이터 도착 이벤트가 `Response::stream_chunk`/
+/// `finish`를 통해 컨슈머에게 청크를 밀어준다. 반면 `new Response(jsStream)`로
+/// 만든 응답(예: `.wasm.gz` + DecompressionStream 래퍼)의 바디는 JS 소스
+/// 스트림이라 밀어줄 주체가 없고, 그대로 두면 `instantiateStreaming`이
+/// 영원히 대기한다(2026-10-28 terrafolk 실사이트 부팅 불능). 이 핸들러가
+/// `read_a_chunk` 프로미스를 따라가며 컨슈머에게 청크를 전달한다.
+#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct JSSourceWasmPumpHandler {
+    response: Dom<Response>,
+    stream: Dom<ReadableStream>,
+}
+
+impl js::gc::Rootable for JSSourceWasmPumpHandler {}
+
+impl JSSourceWasmPumpHandler {
+    /// 읽기 실패·약속 거부 — 컴파일 오류로 전파하고 읽기를 종료한다.
+    fn fail(&self, cx: &mut CurrentRealm) {
+        self.response
+            .stream_wasm_error(JSErrNum::JSMSG_WASM_COMPILE_ERROR as usize);
+        self.stream.stop_reading(cx);
+    }
+}
+
+impl Callback for JSSourceWasmPumpHandler {
+    fn callback(&self, cx: &mut CurrentRealm, v: HandleValue) {
+        match get_read_promise_done(cx, &v) {
+            // 스트림 끝 — 컴파일 완료 가능을 알린다.
+            Ok(true) => {
+                self.response.stream_wasm_end();
+                self.stream.stop_reading(cx);
+                return;
+            },
+            Ok(false) => {},
+            Err(_) => return self.fail(cx),
+        }
+        let chunk = match get_read_promise_bytes(cx, &v) {
+            Ok(chunk) => chunk,
+            Err(_) => return self.fail(cx),
+        };
+        self.response.stream_wasm_chunk(chunk);
+        // 다음 청크를 같은 핸들러로 계속 읽는다.
+        let promise = self.stream.read_a_chunk(cx);
+        let global = self.stream.global();
+        rooted!(&in(cx) let mut next_fulfill = Some(self.clone()));
+        let handler = PromiseNativeHandler::new(
+            cx,
+            &global,
+            next_fulfill.take().map(|handler| Box::new(handler) as Box<_>),
+            None,
+        );
+        promise.append_native_handler(cx, &handler);
+    }
+}
+
+/// JS 소스 스트림 펌프의 거부(오류) 핸들러.
+#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct JSSourceWasmPumpRejectHandler {
+    response: Dom<Response>,
+    stream: Dom<ReadableStream>,
+}
+
+impl js::gc::Rootable for JSSourceWasmPumpRejectHandler {}
+
+impl Callback for JSSourceWasmPumpRejectHandler {
+    fn callback(&self, cx: &mut CurrentRealm, _v: HandleValue) {
+        self.response
+            .stream_wasm_error(JSErrNum::JSMSG_WASM_COMPILE_ERROR as usize);
+        self.stream.stop_reading(cx);
+    }
+}
+
 /// Implements the steps to compile webassembly response mentioned here
 /// <https://webassembly.github.io/spec/web-api/#compile-a-potential-webassembly-response>
 #[expect(unsafe_code)]
@@ -1333,6 +1413,53 @@ unsafe extern "C" fn consume_stream(
             return false;
         }
         unwrapped_source.set_stream_consumer(Some(StreamConsumer(_consumer)));
+
+        // JS 소스 스트림(`new Response(jsStream)`·pipeThrough 결과 등)은 네트워크
+        // 경로와 달리 청크를 밀어주는 주체가 없다 — 태스크로 펌프를 시작한다.
+        // 네이티브 백드는 fetch 이벤트가 stream_chunk/finish로 공급하므로 그대로 둔다.
+        if let Some(stream) = unwrapped_source.fetch_body_stream() {
+            if !stream.is_native_backed() {
+                let response = Trusted::new(&*unwrapped_source);
+                let stream = Trusted::new(&*stream);
+                global.task_manager().dom_manipulation_task_source().queue(
+                    task!(pump_js_wasm_stream: move |cx| {
+                        let response = response.root();
+                        let stream = stream.root();
+                        if !stream.is_readable() {
+                            // 이미 닫힌 스트림 — 즉시 완료 통보.
+                            response.stream_wasm_end();
+                            return;
+                        }
+                        if stream.acquire_default_reader(cx).is_err() {
+                            // 이미 잠긴 스트림 — 컴파일 실패로 통보.
+                            response.stream_wasm_error(
+                                JSErrNum::JSMSG_WASM_COMPILE_ERROR as usize,
+                            );
+                            return;
+                        }
+                        let global = stream.global();
+                        let promise = stream.read_a_chunk(cx);
+                        rooted!(&in(cx) let mut fulfill = Some(JSSourceWasmPumpHandler {
+                            response: Dom::from_ref(&*response),
+                            stream: Dom::from_ref(&*stream),
+                        }));
+                        rooted!(&in(cx) let mut reject = Some(JSSourceWasmPumpRejectHandler {
+                            response: Dom::from_ref(&*response),
+                            stream: Dom::from_ref(&*stream),
+                        }));
+                        let handler = PromiseNativeHandler::new(
+                            cx,
+                            &global,
+                            fulfill.take().map(|handler| Box::new(handler) as Box<_>),
+                            reject.take().map(|handler| Box::new(handler) as Box<_>),
+                        );
+                        let mut realm = enter_auto_realm(cx, &*global);
+                        let realm = &mut realm.current_realm();
+                        promise.append_native_handler(realm, &handler);
+                    }),
+                );
+            }
+        }
     } else {
         // Step 3 Upon rejection of source, return with reason.
         throw_dom_exception(

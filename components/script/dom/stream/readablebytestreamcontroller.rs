@@ -221,6 +221,14 @@ pub(crate) struct ReadableByteStreamController {
 }
 
 impl ReadableByteStreamController {
+    /// 근원 컨테이너가 네이티브(Rust) 소스인지. 컨테이너가 없으면 false.
+    pub(crate) fn is_native_source(&self) -> bool {
+        self.underlying_source
+            .get()
+            .map(|source| source.is_native())
+            .unwrap_or(false)
+    }
+
     fn new_inherited(
         underlying_source_container: &UnderlyingSourceContainer,
         strategy_hwm: f64,
