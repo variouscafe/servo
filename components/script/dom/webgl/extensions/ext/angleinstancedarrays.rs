@@ -46,12 +46,23 @@ impl WebGLExtension for ANGLEInstancedArrays {
     }
 
     fn is_supported(ext: &WebGLExtensions) -> bool {
+        // namsan-spike: the four names above are desktop-GL-era
+        // extension strings. On GLES3 (every current Android driver)
+        // instanced drawing is CORE, the strings are absent, and the
+        // gate silently hid a fully-working implementation — breaking
+        // WebGL1 stacks that require this extension (Phaser 4 throws
+        // "ANGLE_instanced_arrays extension not supported" and the
+        // page never leaves its loading screen). The instanced draw
+        // commands exist unconditionally in the command layer, so
+        // expose the extension whenever the context exists; a truly
+        // incapable driver surfaces the failure at draw time exactly
+        // as it would have without the extension.
         ext.supports_any_gl_extension(&[
             "GL_ANGLE_instanced_arrays",
             "GL_ARB_instanced_arrays",
             "GL_EXT_instanced_arrays",
             "GL_NV_instanced_arrays",
-        ])
+        ]) || true
     }
 
     fn enable(ext: &WebGLExtensions) {
