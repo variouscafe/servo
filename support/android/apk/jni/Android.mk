@@ -19,4 +19,7 @@ include $(CLEAR_VARS)
 LOCAL_PATH := $(SERVO_TARGET_DIR)
 LOCAL_MODULE := servojni
 LOCAL_SRC_FILES := libservoshell.so
+# namsan 패치(2026-10-28): debug 빌드에서도 심볼 유지 스트립 — 링커 산출물의
+# DWARF가 1.8GB까지 부풀어 APK가 500MB+가 되는 것을 방지(전송 가능 ~114MB 유지).
+LOCAL_STRIP_MODULE := keep_symbols
 include $(PREBUILT_SHARED_LIBRARY)

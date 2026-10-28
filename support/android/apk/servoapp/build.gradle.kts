@@ -6,6 +6,10 @@ plugins {
 }
 
 android {
+    // 폰 전송 가능 크기로: 압축 패키징(설치 시 추출) — 274M → ~100M
+    packaging {
+        jniLibs { useLegacyPackaging = true }
+    }
     compileSdk = 37
     buildToolsVersion = "36.0.0"
 
@@ -15,8 +19,11 @@ android {
         applicationId = "org.servo.servoshell"
         minSdk = libs.versions.android.sdk.min.get().toInt()
         targetSdk = 34
-        versionCode = generatedVersionCode
-        versionName = "0.7.0"
+        // namsan 버전 규칙(2026-10-28 지시): 산출물은 namsan-X.Y.Z.apk이고
+        // versionName과 일치. 수정이 생기면 수정 내용에 맞게 버전을 올리고
+        // versionCode도 함께 올린다(날짜 기반 스킴 유지: yyyyMMdd + 금일 빌드 차례).
+        versionCode = 2026102901
+        versionName = "0.1.2"
     }
 
     compileOptions {
@@ -106,7 +113,8 @@ project.afterEvaluate {
         val arch = matcher.group(1)
         val debug = variant.name.contains("Debug")
         val finalFolder = getTargetDir(debug, arch)
-        val finalFile = File(finalFolder, "servoapp.apk")
+        // namsan 규칙: 아티팩트명 = namsan-<versionName>.apk (WebView판과 동일 계약)
+        val finalFile = File(finalFolder, "namsan-${android.defaultConfig.versionName}.apk")
         variant.outputs.forEach { output ->
             val copyAndRenameAPKTask =
                 project.task<Copy>("copyAndRename${variant.name.capitalize()}APK") {
