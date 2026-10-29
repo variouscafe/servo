@@ -106,6 +106,10 @@ pub struct GLState {
     depth_write_mask: bool,
     depth_test_enabled: bool,
     depth_clear_value: f64,
+    // namsan(원인 6호, 2026-10-29): 깊이 함수·범위 추적 — servo 자체 GL 작업이
+    // 페이지 명령 사이에 끼어들어 이 상태를 바꿔도 복원되게 한다.
+    depth_func: u32,
+    depth_range: (f32, f32),
     // True when the default framebuffer is bound to DRAW_FRAMEBUFFER
     drawing_to_default_framebuffer: bool,
     default_vao: Option<NativeVertexArray>,
@@ -172,6 +176,11 @@ impl GLState {
                 gl.disable(gl::DEPTH_TEST);
             } else {
                 gl.depth_mask(self.depth_write_mask);
+                gl.depth_func(self.depth_func);
+                gl.depth_range(
+                    self.depth_range.0.clamp(0., 1.) as f64,
+                    self.depth_range.1.clamp(0., 1.) as f64,
+                );
                 if self.depth_test_enabled {
                     gl.enable(gl::DEPTH_TEST);
                 } else {
@@ -216,6 +225,8 @@ impl Default for GLState {
             stencil_clear_value: 0,
             depth_write_mask: true,
             depth_test_enabled: false,
+            depth_func: 513, // GL_LESS
+            depth_range: (0.0, 1.0),
             depth_clear_value: 1.,
             default_vao: None,
             drawing_to_default_framebuffer: true,
@@ -307,6 +318,7 @@ impl WebGLThread {
     /// Perform all initialization required to run an instance of WebGLThread
     /// in parallel on its own dedicated thread.
     pub(crate) fn run_on_own_thread(init: WebGLThreadInit) -> JoinHandle<()> {
+        eprintln!("namsan-diag: webgl 스레드 시작");
         thread::Builder::new()
             .name("WebGL".to_owned())
             .spawn(move || {
@@ -601,6 +613,17 @@ impl WebGLThread {
         device
             .make_context_current(&ctx)
             .map_err(|err| format!("Failed to make new context current: {:?}", err))?;
+
+        // namsan 진단: 컨텍스트/서피스의 깊이 확보 여부 — descriptor만 기록
+        // (서피스 FBO의 DEPTH_BITS는 이후limits 조회로 판별).
+        {
+            let desc_attrs = device.context_descriptor_attributes(&context_descriptor);
+            eprintln!(
+                "namsan-diag: webgl 컨텍스트 생성 — descriptor_depth={} requested_depth={}",
+                desc_attrs.flags.contains(ContextAttributeFlags::DEPTH),
+                requested_flags.contains(ContextAttributeFlags::DEPTH)
+            );
+        }
 
         let context_id = WebGLContextId(
             self.external_image_id_manager
@@ -1197,12 +1220,16 @@ impl WebGLImpl {
                 )
             },
             WebGLCommand::CullFace(mode) => unsafe { gl.cull_face(mode) },
-            WebGLCommand::DepthFunc(func) => unsafe { gl.depth_func(func) },
+            WebGLCommand::DepthFunc(func) => unsafe {
+                state.depth_func = func;
+                gl.depth_func(func)
+            },
             WebGLCommand::DepthMask(flag) => {
                 state.depth_write_mask = flag;
                 state.restore_depth_invariant(gl);
             },
             WebGLCommand::DepthRange(near, far) => unsafe {
+                state.depth_range = (near, far);
                 gl.depth_range(near.clamp(0., 1.) as f64, far.clamp(0., 1.) as f64)
             },
             WebGLCommand::Disable(cap) => match cap {
@@ -2837,6 +2864,9 @@ impl WebGLImpl {
                 gl::DRAW_FRAMEBUFFER,
                 attachment,
                 gl::FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+            );
+            eprintln!(
+                "namsan-diag: fb_bits attachment=0x{attachment:x} object_type=0x{object_type:x}"
             );
             if object_type as u32 == gl::NONE {
                 return 0;
