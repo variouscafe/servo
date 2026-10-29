@@ -22,8 +22,8 @@ android {
         // namsan 버전 규칙(2026-10-28 지시): 산출물은 namsan-X.Y.Z.apk이고
         // versionName과 일치. 수정이 생기면 수정 내용에 맞게 버전을 올리고
         // versionCode도 함께 올린다(날짜 기반 스킴 유지: yyyyMMdd + 금일 빌드 차례).
-        versionCode = 2026102901
-        versionName = "0.1.2"
+        versionCode = 2026103001
+        versionName = "0.1.4"
     }
 
     compileOptions {
