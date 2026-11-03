@@ -12,6 +12,9 @@ android {
     }
     compileSdk = 37
     buildToolsVersion = "36.0.0"
+    // local.properties ndk.dir(29.0)와 불일치하면 AGP 심볼 스트립 태스크가
+    // CXX1104로 스킵돼 미스트립 .so가 통째로 패키징된다(0.1.4 사고).
+    ndkVersion = "29.0.13113456"
 
     namespace = "org.servo.servoshell"
 
@@ -22,8 +25,8 @@ android {
         // namsan 버전 규칙(2026-10-28 지시): 산출물은 namsan-X.Y.Z.apk이고
         // versionName과 일치. 수정이 생기면 수정 내용에 맞게 버전을 올리고
         // versionCode도 함께 올린다(날짜 기반 스킴 유지: yyyyMMdd + 금일 빌드 차례).
-        versionCode = 2026103001
-        versionName = "0.1.4"
+        versionCode = 2026110301
+        versionName = "0.6.1"
     }
 
     compileOptions {
@@ -138,4 +141,11 @@ dependencies {
     implementation(libs.androidx.material3.compose)
     implementation(libs.androidx.material3.compose.adaptive)
     implementation(libs.androidx.preference)
+    // namsan push bridge: NotificationCompat + 릴레이 통신 + FCM 수신
+    implementation(libs.androidx.core)
+    implementation(libs.okhttp)
+    implementation(libs.firebase.messaging)
+    // namsan: Rust 코어 레지스트리(UniFFI/JNA)
+    implementation(libs.jna) { artifact { type = "aar" } }
+    implementation(libs.androidx.compose.material.icons)
 }

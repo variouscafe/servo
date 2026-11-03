@@ -123,6 +123,9 @@ class ServoNavigator {
     private sealed interface NavigationEvent : Interaction {
         data class Navigate(val uri: String) : NavigationEvent
 
+        /** namsan: 앱 전환 — 상주 웹뷰 활성화(재로드 없음). */
+        data class OpenApp(val appId: String, val uri: String) : NavigationEvent
+
         data object Back : NavigationEvent
 
         data object Forward : NavigationEvent
@@ -139,6 +142,10 @@ class ServoNavigator {
         navigationEvents.collect { navigationEvent ->
             when (navigationEvent) {
                 is NavigationEvent.Navigate -> servo.loadUri(navigationEvent.uri)
+                is NavigationEvent.OpenApp -> servo.openApp(
+                    navigationEvent.appId,
+                    navigationEvent.uri,
+                )
                 NavigationEvent.Back -> servo.goBack()
                 NavigationEvent.Forward -> servo.goForward()
                 NavigationEvent.Reload -> servo.reload()
@@ -155,6 +162,13 @@ class ServoNavigator {
 
     fun navigate(uri: String) {
         coroutineScope.launch { navigationEvents.emit(NavigationEvent.Navigate(uri)) }
+    }
+
+    /** namsan: 앱 열기 — 엔진이 상주 웹뷰를 활성화한다(재로드 없음). */
+    fun openApp(appId: String, uri: String) {
+        coroutineScope.launch {
+            navigationEvents.emit(NavigationEvent.OpenApp(appId, uri))
+        }
     }
 
     fun back() {
@@ -265,6 +279,11 @@ class Servo(
         scope.launch(glDispatcher) { jni.loadUri(uri) }
     }
 
+    /** namsan: 앱 전환 — 상주 웹뷰 활성화(엔진 풀링). */
+    fun openApp(appId: String, uri: String) {
+        scope.launch(glDispatcher) { jni.namsanOpenApp(appId, uri) }
+    }
+
     fun onKeyDown(keyCode: Int, event: KeyEvent) {
         scope.launch(glDispatcher) { jni.keydown(keyCode, event.unicodeChar) }
     }
@@ -312,6 +331,23 @@ class Servo(
     interface Client {
         fun onAlert(message: String)
 
+        // namsan: 웹 알림 표시(포그라운드 Notification API 경로).
+        fun onNotification(title: String, body: String)
+
+        // namsan: 알림 권한 동기 판정 — 임베더 스레드에서 즉시 반환해야 한다.
+        fun onRequestNotificationPermission(): Boolean
+
+        // namsan push bridge: 구독 JSON({endpoint,p256dh,auth}) 또는 null.
+        // 릴레이 등록(네트워크)을 포함하므로 수백 ms 걸릴 수 있다(일회성).
+        fun onPushSubscribe(origin: String): String?
+
+        // namsan push bridge: 저장된 구독만 조회(즉시 반환, 생성 없음).
+        // getSubscription() 사양 — 없으면 null.
+        fun onPushGetSubscription(origin: String): String?
+
+        // namsan: 외부 위임 내비게이션(같은 사이트만 인앱 — Rust 정책 판정 결과).
+        fun onExternalNavigation(url: String)
+
         fun onLoadStarted()
 
         fun onLoadEnded()
@@ -342,6 +378,24 @@ class Servo(
 
         override fun onAlert(message: String) {
             scope.launch { client.onAlert(message) }
+        }
+
+        // namsan: 아래 둘은 JNI가 반환값을 기다리는 동기 콜백이라 코루틴으로
+        // 옮기지 않고 곧바로 위임한다.
+        override fun onRequestNotificationPermission(): Boolean =
+            client.onRequestNotificationPermission()
+
+        override fun onPushSubscribe(origin: String): String? = client.onPushSubscribe(origin)
+
+        override fun onPushGetSubscription(origin: String): String? =
+            client.onPushGetSubscription(origin)
+
+        override fun onNotification(title: String, body: String) {
+            scope.launch { client.onNotification(title, body) }
+        }
+
+        override fun onExternalNavigation(url: String) {
+            scope.launch { client.onExternalNavigation(url) }
         }
 
         override fun onImeShow() {

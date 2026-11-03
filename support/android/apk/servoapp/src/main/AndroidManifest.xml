@@ -10,7 +10,15 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
-    <application android:label="@string/app_name" android:icon="@mipmap/servo">
+    <application android:name=".NamsanApp" android:label="@string/app_name" android:icon="@mipmap/namsan">
+        <!-- namsan push bridge: 릴레이→FCM 백그라운드 수신 -->
+        <service
+            android:name=".NamsanFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
         <activity android:name=".MainActivity"
             android:configChanges="density|keyboardHidden|navigation|orientation|screenSize|uiMode"
             android:exported="true"

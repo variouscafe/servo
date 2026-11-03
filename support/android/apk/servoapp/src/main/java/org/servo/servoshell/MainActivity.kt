@@ -6,266 +6,107 @@
 package org.servo.servoshell
 
 import android.content.Intent
-import android.content.SharedPreferences
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.system.ErrnoException
 import android.system.Os
-import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.component1
-import androidx.activity.result.component2
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.text.input.TextFieldState
-import androidx.compose.foundation.text.input.selectAll
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SearchBar
-import androidx.compose.material3.SearchBarDefaults
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
-import androidx.compose.material3.rememberSearchBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.lifecycleScope
 import androidx.preference.PreferenceManager
-import androidx.window.core.layout.WindowSizeClass
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
 import kotlinx.coroutines.launch
+import org.servo.servoshell.ui.home.UiApp
+import org.servo.servoshell.ui.home.NamsanHome
+import org.servo.servoshell.ui.home.toUiApp
+import org.servo.servoshell.ui.theme.NamsanTheme
+import org.servo.servoshell.ui.webapp.AppDrawerPanel
+import org.servo.servoshell.ui.webapp.EdgeSwipeZone
 import org.servo.servoview.Servo
 import org.servo.servoview.ServoNavigator
 
+/**
+ * 남산 런처(servo 엔진). 홈은 앱 아이콘 그리드, "+"로 사이트 추가,
+ * 앱 화면은 전체 화면 실행 — URL 주소창은 어디에도 없다.
+ * 좌측 엣지(24dp) 우측 스와이프 → 앱 목록 패널.
+ */
 class MainActivity : ComponentActivity(), Servo.Client {
-    private val urlTextFieldState = TextFieldState()
+    private var currentApp by mutableStateOf<UiApp?>(null)
+    private var apps by mutableStateOf<List<UiApp>>(emptyList())
+    private var loading by mutableStateOf(true)
+    private var adding by mutableStateOf(false)
+    private var drawerOpen by mutableStateOf(false)
+    private var alertMessage by mutableStateOf<String?>(null)
     private var isRefreshing by mutableStateOf(false)
-    private lateinit var historyManager: HistoryManager
+    private var splashActive by mutableStateOf(false)
+    private var softKeyboardVisible by mutableStateOf(false)
+
     private var currentUrl = ""
     private var currentTitle = ""
-    private var softKeyboardVisible by mutableStateOf(false)
-    private var alertMessage by mutableStateOf<String?>(null)
-
-    private class Settings(preferences: SharedPreferences) {
-        var experimental = preferences.getBoolean("experimental", false)
-    }
+    private lateinit var navigator: ServoNavigator
+    private lateinit var servo: Servo
+    private lateinit var repository: org.servo.servoshell.data.WebAppRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-
-        val sharedPreferences = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-        val settings = Settings(sharedPreferences)
-        val navigator = ServoNavigator()
-        var experimentalModeEnabled by mutableStateOf(settings.experimental)
-        val servo =
-            Servo(
-                args = intent.getStringExtra("servoargs"),
-                url = if (Intent.ACTION_VIEW == intent.action) intent.data.toString() else null,
-                logStr = intent.getStringExtra("servolog"),
-                experimentalMode = experimentalModeEnabled,
-                scope = lifecycleScope,
-                client = this,
-                context = this,
-                navigator = navigator,
-            )
-
-        historyManager = HistoryManager(this)
-
-        val historyActivityResultLauncher =
-            registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-                (resultCode, data) ->
-                if (resultCode == RESULT_OK && data != null) {
-                    val url = data.getStringExtra("url")
-                    if (!url.isNullOrEmpty()) {
-                        urlTextFieldState.edit { replace(0, length, url) }
-                        navigator.navigate(urlTextFieldState.text.toString())
-                    }
-                }
-            }
-
-        setContent {
-            LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-                val settings = Settings(sharedPreferences)
-                experimentalModeEnabled = settings.experimental
-            }
-
-            val isWindowWidthAtLeastMedium =
-                currentWindowAdaptiveInfo()
-                    .windowSizeClass
-                    .isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
-
-            val servoFocusRequester = remember { FocusRequester() }
-            Scaffold(
-                topBar = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (isWindowWidthAtLeastMedium) {
-                            IconButton(
-                                onClick = { onHistoryBackMenuItemClicked(navigator) },
-                                enabled = navigator.canGoBack,
-                            ) {
-                                Icon(
-                                    painterResource(R.drawable.arrow_back),
-                                    stringResource(R.string.history_back),
-                                )
-                            }
-                            IconButton(
-                                onClick = { onHistoryForwardMenuItemClicked(navigator) },
-                                enabled = navigator.canGoForward,
-                            ) {
-                                Icon(
-                                    painterResource(R.drawable.arrow_forward),
-                                    stringResource(R.string.history_forward),
-                                )
-                            }
-                            IconButton(
-                                onClick = {
-                                    if (isRefreshing) onCancelMenuItemClicked(navigator)
-                                    else onRefreshMenuItemClicked(navigator)
-                                }
-                            ) {
-                                if (isRefreshing) {
-                                    Icon(
-                                        painterResource(R.drawable.cancel),
-                                        stringResource(R.string.cancel),
-                                    )
-                                } else {
-                                    Icon(
-                                        painterResource(R.drawable.refresh),
-                                        stringResource(R.string.refresh),
-                                    )
-                                }
-                            }
-                        }
-                        Omnibox(
-                            urlTextFieldState,
-                            onSearch = { search ->
-                                navigator.navigate(search)
-                                servoFocusRequester.requestFocus()
-                            },
-                            modifier = Modifier.weight(1f).padding(end = 10.dp),
-                        )
-                        if (isRefreshing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.padding(end = 10.dp).size(20.dp)
-                            )
-                        }
-                        if (isWindowWidthAtLeastMedium) {
-                            IconButton(onClick = ::onSettingsMenuItemClicked) {
-                                Icon(
-                                    painterResource(R.drawable.settings),
-                                    stringResource(R.string.options),
-                                )
-                            }
-                            IconButton(
-                                onClick = {
-                                    onHistoryMenuItemClicked(historyActivityResultLauncher)
-                                }
-                            ) {
-                                Icon(
-                                    painterResource(R.drawable.history),
-                                    stringResource(R.string.history_title),
-                                )
-                            }
-                        }
-                    }
-                },
-                bottomBar = {
-                    if (!isWindowWidthAtLeastMedium) {
-                        NavigationBar {
-                            NavigationBarItem(
-                                selected = false,
-                                enabled = navigator.canGoBack,
-                                onClick = { onHistoryBackMenuItemClicked(navigator) },
-                                icon = { Icon(painterResource(R.drawable.arrow_back), null) },
-                                label = { Text(stringResource(R.string.history_back)) },
-                            )
-                            NavigationBarItem(
-                                selected = false,
-                                enabled = navigator.canGoForward,
-                                onClick = { onHistoryForwardMenuItemClicked(navigator) },
-                                icon = { Icon(painterResource(R.drawable.arrow_forward), null) },
-                                label = { Text(stringResource(R.string.history_forward)) },
-                            )
-                            if (isRefreshing) {
-                                NavigationBarItem(
-                                    selected = false,
-                                    onClick = { onCancelMenuItemClicked(navigator) },
-                                    icon = { Icon(painterResource(R.drawable.cancel), null) },
-                                    label = { Text(stringResource(R.string.cancel)) },
-                                )
-                            } else {
-                                NavigationBarItem(
-                                    selected = false,
-                                    onClick = { onRefreshMenuItemClicked(navigator) },
-                                    icon = { Icon(painterResource(R.drawable.refresh), null) },
-                                    label = { Text(stringResource(R.string.refresh)) },
-                                )
-                            }
-                            NavigationBarItem(
-                                selected = false,
-                                onClick = ::onSettingsMenuItemClicked,
-                                icon = { Icon(painterResource(R.drawable.settings), null) },
-                                label = { Text(stringResource(R.string.options)) },
-                            )
-                            NavigationBarItem(
-                                selected = false,
-                                onClick = {
-                                    onHistoryMenuItemClicked(historyActivityResultLauncher)
-                                },
-                                icon = { Icon(painterResource(R.drawable.history), null) },
-                                label = { Text(stringResource(R.string.history_title)) },
-                            )
-                        }
-                    }
-                },
-            ) { innerPadding ->
-                Servo(
-                    experimentalModeEnabled = experimentalModeEnabled,
-                    softKeyboardVisible = softKeyboardVisible,
-                    servo = servo,
-                    navigator = navigator,
-                    modifier = Modifier.padding(innerPadding).focusRequester(servoFocusRequester),
-                )
-                BackHandler(enabled = navigator.canGoBack) { navigator.back() }
-                LaunchedEffect(servoFocusRequester) { servoFocusRequester.requestFocus() }
-                alertMessage?.let { alertMessage ->
-                    AlertDialog(
-                        onDismissRequest = { this.alertMessage = null },
-                        confirmButton = {
-                            TextButton(onClick = { this.alertMessage = null }) {
-                                Text(stringResource(android.R.string.ok))
-                            }
-                        },
-                        text = { Text(alertMessage) },
-                    )
-                }
-            }
-        }
-
         val sdcard = getExternalFilesDir("")
         val host = sdcard!!.toPath().resolve("android_hosts").toString()
         try {
@@ -273,32 +114,407 @@ class MainActivity : ComponentActivity(), Servo.Client {
         } catch (e: ErrnoException) {
             e.printStackTrace()
         }
+
+        super.onCreate(savedInstanceState)
+        repository = (application as NamsanApp).repository
+        navigator = ServoNavigator()
+
+        // 알림 탭 등 외부 URL 진입은 그대로 앱 화면으로 연다.
+        val initialUrl = if (Intent.ACTION_VIEW == intent.action) intent.data?.toString() else null
+        currentApp = initialUrl?.toExternalApp()
+
+        var experimentalModeEnabled by mutableStateOf(loadExperimentalPreference())
+        servo = Servo(
+            args = intent.getStringExtra("servoargs"),
+            url = initialUrl,
+            logStr = intent.getStringExtra("servolog"),
+            experimentalMode = experimentalModeEnabled,
+            scope = lifecycleScope,
+            client = this,
+            context = this,
+            navigator = navigator,
+        )
+
+        refreshApps()
+
+        // namsan: Android 13+ 알림 런타임 권한 — 웹 노티 표시 조건.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+        }
+
+        setContent {
+            LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                experimentalModeEnabled = loadExperimentalPreference()
+            }
+            NamsanTheme {
+                NamsanRoot(experimentalModeEnabled)
+            }
+        }
     }
 
-    private fun onHistoryBackMenuItemClicked(navigator: ServoNavigator) {
-        navigator.back()
+    // ── 화면 구성 ────────────────────────────────────────────
+
+    @Composable
+    private fun NamsanRoot(experimentalModeEnabled: Boolean) {
+        val app = currentApp
+
+        // 뒤로: (우선순위 역순 등록) 앱 화면 → 사이트 뒤로/홈 복귀, 드로어 열림 → 닫기.
+        BackHandler(enabled = app != null) {
+            if (navigator.canGoBack) navigator.back() else currentApp = null
+        }
+        // 드로어 드래그 추적 — 손가락을 따라 열리고, 놓으면 결정된 방향으로 스르륵.
+        val drawerProgress = remember { Animatable(0f) }
+        val drawerScope = rememberCoroutineScope()
+        val drawerHaptics = LocalHapticFeedback.current
+        val panelWidthPx = with(LocalDensity.current) { 300.dp.toPx() }
+        fun dragDrawer(deltaPx: Float) {
+            drawerScope.launch {
+                drawerProgress.snapTo(
+                    (drawerProgress.value + deltaPx / panelWidthPx).coerceIn(0f, 1f),
+                )
+            }
+        }
+        fun settleDrawer() {
+            drawerScope.launch {
+                // 같은 디스패처 큐에 쌓인 snapTo들이 모두 실행된 뒤의 값을 읽는다
+                // (빠른 플릭에서 마지막 델타 반영 전에 읽어 방향을 오판하는 것 방지).
+                val target = if (drawerProgress.value > 0.4f) 1f else 0f
+                drawerProgress.animateTo(target, tween(220))
+                drawerOpen = target == 1f
+                // 열림으로 확정된 순간 가벼운 햅틱 — 제스처 마감 확인감.
+                if (target == 1f) {
+                    drawerHaptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                }
+            }
+        }
+        fun closeDrawer() {
+            drawerOpen = false
+            drawerScope.launch { drawerProgress.animateTo(0f, tween(180)) }
+        }
+
+        BackHandler(enabled = drawerOpen) { closeDrawer() }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+                .statusBarsPadding(),
+        ) {
+            // 상단바와 로드 진행바는 앱 화면에서만 나타난다(부드러운 슬라이드).
+            AnimatedVisibility(visible = app != null, enter = slideInVertically { -it } + fadeIn(), exit = slideOutVertically { -it } + fadeOut()) {
+                Column {
+                    app?.let { NamsanTopBar(app = it, refreshing = isRefreshing) }
+                    // Chrome 스타일 얇은 진행바
+                    AnimatedVisibility(visible = isRefreshing) {
+                        LinearProgressIndicator(
+                            progress = { 0.7f },
+                            modifier = Modifier.fillMaxWidth().height(2.dp),
+                            strokeCap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        )
+                    }
+                }
+            }
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                // 서보 표면 — 항상 compose 유지(onRelease가 glDispatcher를 닫아 재사용 불가).
+                // 홈일 때는 불투명 홈 화면이 위를 덮는다.
+                Servo(
+                    experimentalModeEnabled = experimentalModeEnabled,
+                    softKeyboardVisible = softKeyboardVisible,
+                    servo = servo,
+                    navigator = navigator,
+                    modifier = Modifier.fillMaxSize(),
+                )
+
+                // 홈 ↔ 앱 전환: 홈이 부드럽게 사라지며 서보 표면이 드러난다.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = app == null,
+                    enter = fadeIn(animationSpec = tween(220)),
+                    exit = fadeOut(animationSpec = tween(180)) +
+                        slideOutVertically(animationSpec = tween(220)) { it / 12 },
+                ) {
+                    NamsanHome(
+                        apps = apps,
+                        loading = loading,
+                        adding = adding,
+                        iconLoader = { id -> repository.icon(id) },
+                        onOpenApp = { target -> openApp(target) },
+                        onRename = { target, name -> renameApp(target, name) },
+                        onDelete = { target -> deleteApp(target) },
+                        onAdd = { input, done -> submitAdd(input, done) },
+                    )
+                }
+
+                // 앱 첫 로드 스플래시 — 흰 플래시 대신 브랜드 오버레이.
+                androidx.compose.animation.AnimatedVisibility(visible = splashActive, exit = fadeOut(tween(200))) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                painterResource(R.drawable.namsan_splash_mark),
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(72.dp),
+                            )
+                            Spacer(Modifier.height(20.dp))
+                            CircularProgressIndicator(modifier = Modifier.width(28.dp).height(28.dp))
+                        }
+                    }
+                }
+
+                // 좌측 엣지 그래버 — 드로어를 열 수 있다는 시각적 단서(앱 화면에서만).
+                if (app != null && !drawerOpen) {
+                    Box(
+                        modifier = Modifier
+                            .padding(start = 2.dp)
+                            .width(4.dp)
+                            .height(40.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
+                            )
+                            .align(Alignment.CenterStart),
+                    )
+                }
+
+                // 엣지 스와이프 드로어 — 홈/앱 화면 공통(앱 전환의 일관된 진입점).
+                EdgeSwipeZone(
+                    onDragDelta = { delta -> dragDrawer(delta) },
+                    onRelease = { settleDrawer() },
+                )
+                AppDrawerPanel(
+                    progress = drawerProgress,
+                    apps = apps,
+                    currentAppId = app?.id ?: "",
+                    iconLoader = { id -> repository.icon(id) },
+                    onDismiss = { closeDrawer() },
+                    onSelect = { target ->
+                        closeDrawer()
+                        if (app == null || target.id != app.id) openApp(target)
+                    },
+                    onHome = { closeDrawer(); currentApp = null },
+                    onAdd = { closeDrawer(); currentApp = null }, // 홈의 +로 유도
+                    onDragDelta = { delta -> dragDrawer(delta) },
+                    onRelease = { settleDrawer() },
+                )
+            }
+        }
+
+        alertMessage?.let { message ->
+            AlertDialog(
+                onDismissRequest = { alertMessage = null },
+                confirmButton = {
+                    TextButton(onClick = { alertMessage = null }) { Text("확인") }
+                },
+                text = { Text(message) },
+            )
+        }
     }
 
-    private fun onHistoryForwardMenuItemClicked(navigator: ServoNavigator) {
-        navigator.forward()
+    /** 상단바: 홈 / 앱 이름 / 메뉴 — URL 입력창은 없다. */
+    @Composable
+    private fun NamsanTopBar(app: UiApp, refreshing: Boolean) {
+        val context = LocalContext.current
+        Surface(shadowElevation = 2.dp, color = MaterialTheme.colorScheme.surface) {
+            Row(
+                modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { currentApp = null }) {
+                    Icon(Icons.Filled.Home, contentDescription = "홈")
+                }
+                Text(
+                    app.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = { if (refreshing) navigator.stop() else navigator.reload() }) {
+                    Icon(
+                        if (refreshing) Icons.Filled.Close else Icons.Filled.Refresh,
+                        contentDescription = if (refreshing) "정지" else "새로고침",
+                    )
+                }
+                var menuOpen by remember { mutableStateOf(false) }
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "메뉴")
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("새로고침") },
+                        leadingIcon = { Icon(Icons.Filled.Refresh, null) },
+                        onClick = { menuOpen = false; navigator.reload() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("공유") },
+                        leadingIcon = { Icon(Icons.Filled.Share, null) },
+                        onClick = {
+                            menuOpen = false
+                            runCatching {
+                                context.startActivity(
+                                    Intent.createChooser(
+                                        Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, currentUrl.ifBlank { app.url })
+                                        },
+                                        "공유",
+                                    ),
+                                )
+                            }
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("브라우저로 열기") },
+                        onClick = {
+                            menuOpen = false
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, Uri.parse(currentUrl.ifBlank { app.url })),
+                                )
+                            }
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("설정") },
+                        leadingIcon = { Icon(Icons.Filled.Settings, null) },
+                        onClick = {
+                            menuOpen = false
+                            startActivity(Intent(context, SettingsActivity::class.java))
+                        },
+                    )
+                }
+            }
+        }
     }
 
-    private fun onRefreshMenuItemClicked(navigator: ServoNavigator) {
-        navigator.reload()
+    // ── 동작 ────────────────────────────────────────────────
+
+    private fun openApp(target: UiApp) {
+        currentApp = target
+        splashActive = true
+        navigator.openApp(target.id, target.url)
+        lifecycleScope.launch {
+            runCatching { repository.markOpened(target.id) }
+        }
     }
 
-    private fun onCancelMenuItemClicked(navigator: ServoNavigator) {
-        navigator.stop()
+    private fun refreshApps() {
+        lifecycleScope.launch {
+            loading = true
+            apps = runCatching {
+                repository.listApps()
+                    .map { it.toUiApp() }
+                    // 최근 사용 순 + 미사용 앱은 등록 순(안정 정렬)으로 뒤에.
+                    .let { list ->
+                        list.filter { it.lastOpenedAt != null }
+                            .sortedByDescending { it.lastOpenedAt!! } +
+                            list.filter { it.lastOpenedAt == null }
+                    }
+            }.getOrDefault(emptyList())
+            loading = false
+        }
     }
 
-    private fun onSettingsMenuItemClicked() {
-        startActivity(Intent(this, SettingsActivity::class.java))
+    private fun submitAdd(input: String, done: (Result<Unit>) -> Unit) {
+        lifecycleScope.launch {
+            adding = true
+            val result = runCatching { repository.addApp(input) }.map { }
+            adding = false
+            if (result.isSuccess) {
+                apps = runCatching { repository.listApps().map { it.toUiApp() } }
+                .getOrDefault(apps)
+                .let { l -> l.filter { it.lastOpenedAt != null }.sortedByDescending { it.lastOpenedAt!! } + l.filter { it.lastOpenedAt == null } }
+            }
+            done(result)
+        }
     }
 
-    private fun onHistoryMenuItemClicked(
-        historyActivityResultLauncher: ActivityResultLauncher<Intent>
-    ) {
-        historyActivityResultLauncher.launch(Intent(this, HistoryActivity::class.java))
+    private fun renameApp(target: UiApp, name: String) {
+        lifecycleScope.launch {
+            runCatching { repository.renameApp(target.id, name) }
+            refreshApps()
+        }
+    }
+
+    private fun deleteApp(target: UiApp) {
+        lifecycleScope.launch {
+            runCatching { repository.deleteApp(target.id) }
+            if (currentApp?.id == target.id) currentApp = null
+            refreshApps()
+        }
+    }
+
+    private fun String.toExternalApp(): UiApp {
+        val host = runCatching { Uri.parse(this).host }.getOrNull() ?: this
+        return UiApp(id = "external:$this", name = host, url = this, themeColor = null)
+    }
+
+    private fun loadExperimentalPreference(): Boolean =
+        PreferenceManager.getDefaultSharedPreferences(applicationContext)
+            .getBoolean("experimental", false)
+
+    // ── Servo.Client 콜백 ───────────────────────────────────
+
+    override fun onAlert(message: String) {
+        alertMessage = message
+    }
+
+    override fun onNotification(title: String, body: String) {
+        NamsanPush.showWebNotification(this, title, body)
+    }
+
+    override fun onRequestNotificationPermission(): Boolean =
+        NamsanPush.notificationPermission(this)
+
+    override fun onPushSubscribe(origin: String): String? =
+        NamsanPush.subscribeBlocking(origin)
+
+    override fun onPushGetSubscription(origin: String): String? =
+        NamsanPush.getSubscription(origin)
+
+    override fun onExternalNavigation(url: String) {
+        // 같은 사이트가 아니면 시스템 브라우저/앱으로 위임(판정은 엔진 Rust).
+        // 남산이 기본 브라우저여도 자기 자신으로 되돌아가며 무한 증식하지 않도록
+        // 자기 패키지는 위임 대상에서 제외한다.
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val target = packageManager.queryIntentActivities(intent, 0)
+                .firstOrNull { it.activityInfo?.packageName != packageName }
+            if (target != null) {
+                startActivity(intent.setPackage(target.activityInfo.packageName))
+            } else {
+                Toast.makeText(this, "열 수 있는 앱이 없습니다", Toast.LENGTH_SHORT).show()
+            }
+        }.onFailure {
+            Toast.makeText(this, "열 수 있는 앱이 없습니다", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onLoadStarted() {
+        isRefreshing = true
+    }
+
+    override fun onLoadEnded() {
+        isRefreshing = false
+        splashActive = false
+    }
+
+    override fun onTitleChanged(title: String) {
+        currentTitle = title
+    }
+
+    override fun onUrlChanged(url: String) {
+        currentUrl = url
+        // 상주 웹뷰 활성화(재로드 없는 앱 전환)는 로드 이벤트가 오지 않으므로
+        // URL 콜백 시점에 스플래시/진행 상태를 해제한다.
+        splashActive = false
+        isRefreshing = false
     }
 
     override fun onImeShow() {
@@ -308,71 +524,4 @@ class MainActivity : ComponentActivity(), Servo.Client {
     override fun onImeHide() {
         softKeyboardVisible = false
     }
-
-    override fun onAlert(message: String) {
-        alertMessage = message
-    }
-
-    override fun onLoadStarted() {
-        // This doesn’t seem to actually happen when navigating
-        // back to a page that is already cached.
-        Log.i(TAG, "onLoadStarted: ")
-        isRefreshing = true
-    }
-
-    // INFO: This currently gets called multiple times on each load.
-    override fun onLoadEnded() {
-        Log.i(TAG, "onLoadEnded: ")
-        if (currentUrl.isNotEmpty()) {
-            // HistoryManager has a basic method of preventing clobbering
-            // by the fact that onLoadEnded gets called multiple times
-            // per page.
-            historyManager.addEntry(currentUrl, currentTitle)
-        }
-        isRefreshing = false
-    }
-
-    override fun onTitleChanged(title: String) {
-        currentTitle = title
-    }
-
-    override fun onUrlChanged(url: String) {
-        urlTextFieldState.edit { replace(0, length, url) }
-        currentUrl = url
-    }
-
-    companion object {
-        private const val TAG = "MainActivity"
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun Omnibox(
-    textFieldState: TextFieldState,
-    onSearch: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val searchBarState = rememberSearchBarState()
-
-    SearchBar(
-        state = searchBarState,
-        inputField = {
-            val coroutineScope = rememberCoroutineScope()
-
-            SearchBarDefaults.InputField(
-                textFieldState = textFieldState,
-                searchBarState = searchBarState,
-                onSearch = onSearch,
-                modifier =
-                    Modifier.onFocusChanged { focusState ->
-                        if (focusState.isFocused) {
-                            coroutineScope.launch { textFieldState.edit { selectAll() } }
-                        }
-                    },
-                placeholder = { Text(stringResource(R.string.url_or_search)) },
-            )
-        },
-        modifier = modifier,
-    )
 }

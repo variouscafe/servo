@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- namsan: 적응형 런처 아이콘 — 깊은 남색 하늘 + 흰 산실루엣 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/namsan_icon_background" />
+    <foreground android:drawable="@drawable/namsan_icon_foreground" />
+    <monochrome android:drawable="@drawable/namsan_icon_foreground" />
+</adaptive-icon>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- namsan: 런처 아이콘 전경 — 세 봉우리 산 실루엣(흰색) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 안전 영역(66x66 중앙) 안에 세 봉우리 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,70 L40,40 L50,56 L58,44 L74,70 Z" />
+    <path
+        android:fillColor="#B3D4F5"
+        android:pathData="M40,40 L46,51 L42,54 Z" />
+    <path
+        android:fillColor="#B3D4F5"
+        android:pathData="M58,44 L64,54 L59,57 Z" />
+</vector>

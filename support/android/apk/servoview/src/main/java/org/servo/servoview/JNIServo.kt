@@ -45,6 +45,9 @@ internal class JNIServo {
 
     external fun loadUri(uri: String)
 
+    /** namsan: 앱 전환 — 상주 웹뷰 활성화(엔진 풀링, 재로드 없음). */
+    external fun namsanOpenApp(appId: String, uri: String)
+
     external fun keydown(keycode: Int, unicode: Int)
 
     external fun keyup(keycode: Int, unicode: Int)
@@ -69,6 +72,23 @@ internal class JNIServo {
         fun wakeup()
 
         fun onAlert(message: String)
+
+        // namsan: Notification API — 웹 페이지가 띄운 알림(앱이 시스템 노티로 표시).
+        fun onNotification(title: String, body: String)
+
+        // namsan: 알림 권한 판정(동기). 앱 설정 + 시스템 권한 상태로 즉시 결정.
+        fun onRequestNotificationPermission(): Boolean
+
+        // namsan push bridge: Web Push 구독 생성(동기, 일회성).
+        // {endpoint,p256dh,auth} JSON 또는 null(구독 실패/거부).
+        fun onPushSubscribe(origin: String): String?
+
+        // namsan push bridge: 저장된 구독만 조회(동기, 네트워크 없음).
+        // pushManager.getSubscription() — 없으면 null(새로 만들지 않는다).
+        fun onPushGetSubscription(origin: String): String?
+
+        // namsan: 정책상 외부로 위임할 내비게이션(앱이 시스템 브라우저/앱으로 연다).
+        fun onExternalNavigation(url: String)
 
         fun onLoadStarted()
 
