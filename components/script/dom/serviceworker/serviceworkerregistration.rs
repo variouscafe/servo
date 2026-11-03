@@ -29,6 +29,7 @@ use crate::dom::cookiestoremanager::CookieStoreManager;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::navigationpreloadmanager::NavigationPreloadManager;
+use crate::dom::pushmanager::PushManager;
 use crate::dom::promise::Promise;
 use crate::dom::serviceworker::ServiceWorker;
 use crate::dom::window::Window;
@@ -41,6 +42,8 @@ pub(crate) struct ServiceWorkerRegistration {
     installing: MutNullableDom<ServiceWorker>,
     waiting: MutNullableDom<ServiceWorker>,
     navigation_preload: MutNullableDom<NavigationPreloadManager>,
+    // namsan push bridge: 이 등록에 딸린 PushManager(SameObject, 지연 생성).
+    push_manager: MutNullableDom<PushManager>,
     // Each ServiceWorkerRegistration has an associated CookieStoreManager object.
     // https://cookiestore.spec.whatwg.org/#dom-serviceworkerregistration-cookies
     cookie_manager: MutNullableDom<CookieStoreManager>,
@@ -67,6 +70,7 @@ impl ServiceWorkerRegistration {
             installing: MutNullableDom::new(None),
             waiting: MutNullableDom::new(None),
             navigation_preload: MutNullableDom::new(None),
+            push_manager: MutNullableDom::new(None),
             cookie_manager: MutNullableDom::new(None),
             scope,
             // https://w3c.github.io/ServiceWorker/#service-worker-registration-navigation-preload-enabled
@@ -284,6 +288,12 @@ impl ServiceWorkerRegistrationMethods<crate::DomTypeHolder> for ServiceWorkerReg
     fn NavigationPreload(&self, cx: &mut JSContext) -> DomRoot<NavigationPreloadManager> {
         self.navigation_preload
             .or_init(|| NavigationPreloadManager::new(cx, &self.global(), self))
+    }
+
+    /// <https://w3c.github.io/push-api/#dom-serviceworkerregistration-pushmanager>
+    /// namsan push bridge: 지연 생성되는 SameObject 관리자.
+    fn PushManager(&self, cx: &mut JSContext) -> DomRoot<PushManager> {
+        self.push_manager.or_init(|| PushManager::new(cx, &self.global()))
     }
 
     /// <https://cookiestore.spec.whatwg.org/#dom-serviceworkerregistration-cookies>

@@ -25,7 +25,8 @@ use raw_window_handle::{
     WindowHandle,
 };
 use servo::{
-    self, DevicePixel, EventLoopWaker, InputMethodControl, LoadStatus, SelectElement, WebViewId,
+    self, DevicePixel, EventLoopWaker, InputMethodControl, LoadStatus, Notification,
+    PushSubscriptionData, SelectElement, WebViewId,
 };
 
 use super::app::{App, AppInitOptions};
@@ -306,6 +307,21 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_loadUri<'local>(
     env.with_env(|env| -> jni::errors::Result<_> {
         debug!("loadUri");
         call(env, |s| s.load_uri(&url.to_string()));
+        Ok(())
+    })
+    .resolve::<ThrowRuntimeExAndDefault>()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_servo_servoview_JNIServo_namsanOpenApp<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    app_id: JString<'local>,
+    url: JString<'local>,
+) {
+    env.with_env(|env| -> jni::errors::Result<_> {
+        debug!("namsanOpenApp");
+        call(env, |s| s.namsan_open_app(&app_id.to_string(), &url.to_string()));
         Ok(())
     })
     .resolve::<ThrowRuntimeExAndDefault>()
@@ -710,6 +726,122 @@ impl HostTrait for HostCallbacks {
     fn on_show_select_element(&self, _webview_id: WebViewId, _prompt: SelectElement) {}
 
     fn on_panic(&self, _reason: String, _backtrace: Option<String>) {}
+
+    /// namsan: Notification API — 앱(Kotlin)이 시스템 알림으로 띄운다.
+    fn show_notification(&self, notification: Notification) {
+        self.jvm
+            .attach_current_thread(|env| -> Result<(), Error> {
+                let Ok(title) = new_string_as_jvalue(env, &notification.title) else {
+                    return Ok(());
+                };
+                let Ok(body) = new_string_as_jvalue(env, &notification.body) else {
+                    return Ok(());
+                };
+                env.call_method(
+                    callback_ref(),
+                    jni_str!("onNotification"),
+                    jni_sig!("(Ljava/lang/String;Ljava/lang/String;)V"),
+                    &[(&title).into(), (&body).into()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// namsan: 정책상 외부로 위임할 내비게이션 — 앱이 시스템 브라우저/앱으로 연다.
+    fn on_external_navigation(&self, url: String) {
+        self.jvm
+            .attach_current_thread(|env| -> Result<(), Error> {
+                let Ok(url) = new_string_as_jvalue(env, &url) else {
+                    return Ok(());
+                };
+                env.call_method(
+                    callback_ref(),
+                    jni_str!("onExternalNavigation"),
+                    jni_sig!("(Ljava/lang/String;)V"),
+                    &[(&url).into()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// namsan: 알림 권한 판정을 앱에 동기로 묻는다(앱 설정 + 시스템 권한).
+    fn request_notification_permission(&self) -> bool {
+        self.jvm
+            .attach_current_thread(|env| -> Result<bool, Error> {
+                Ok(env
+                    .call_method(
+                        callback_ref(),
+                        jni_str!("onRequestNotificationPermission"),
+                        jni_sig!("()Z"),
+                        &[],
+                    )?
+                    .z()?)
+            })
+            .unwrap_or(false)
+    }
+
+    /// namsan push bridge: 앱이 키를 만들어 릴레이에 등록하고 구독 JSON을
+    /// 돌려준다. 앱이 null을 돌려주면 구독 실패(페이지의 프라미스 거부).
+    /// create == false면 조회 전용 — 저장된 구독만 돌려받는다(없으면 None).
+    fn request_push_subscription(
+        &self,
+        origin: String,
+        create: bool,
+    ) -> Option<PushSubscriptionData> {
+        jni_push_subscription(&self.jvm, origin, create)
+    }
+
+    /// namsan push bridge: 릴레이 등록의 네트워크 왕복(수백 ms)이 엔진/GL
+    /// 스레드를 멈추지 않도록, 임의 스레드에서 호출 가능한 작업 핸들을 낸다.
+    /// JavaVM은 Send+Sync이고 callback_ref()는 전역 참조라 스레드 안전하다.
+    fn push_subscription_worker(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(String, bool) -> Option<PushSubscriptionData> + Send + Sync>>
+    {
+        let jvm = self.jvm.clone();
+        Some(std::sync::Arc::new(move |origin, create| {
+            jni_push_subscription(&jvm, origin, create)
+        }))
+    }
+}
+
+/// 구독 생성(create)/조회 JNI 왕복. create 구분은 Kotlin 콜백 메서드로
+/// 나뉜다 — onPushSubscribe(생성, 네트워크 동반) / onPushGetSubscription
+/// (저장된 구독만, 즉시).
+fn jni_push_subscription(
+    jvm: &JavaVM,
+    origin: String,
+    create: bool,
+) -> Option<PushSubscriptionData> {
+    jvm.attach_current_thread(|env| -> Result<Option<PushSubscriptionData>, Error> {
+        let Ok(origin) = new_string_as_jvalue(env, &origin) else {
+            return Ok(None);
+        };
+        let result = if create {
+            env.call_method(
+                callback_ref(),
+                jni_str!("onPushSubscribe"),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
+                &[(&origin).into()],
+            )?
+        } else {
+            env.call_method(
+                callback_ref(),
+                jni_str!("onPushGetSubscription"),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
+                &[(&origin).into()],
+            )?
+        };
+        let obj = result.l()?;
+        if obj.is_null() {
+            return Ok(None);
+        }
+        let json = JString::cast_local(env, obj)?.try_to_string(env)?;
+        Ok(serde_json::from_str(&json).ok())
+    })
+    .unwrap_or(None)
 }
 
 unsafe extern "C" {

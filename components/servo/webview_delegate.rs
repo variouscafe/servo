@@ -10,9 +10,10 @@ use embedder_traits::{
     ConfirmResponse, ConsoleLogLevel, ContextMenuAction, ContextMenuElementInformation,
     ContextMenuItem, Cursor, EmbedderControlId, EmbedderControlResponse, FilePickerRequest,
     FilterPattern, InputEventId, InputEventResult, InputMethodType, LoadStatus, MediaSessionEvent,
-    NewWebViewDetails, Notification, PermissionFeature, PromptResponse, RgbColor, ScreenGeometry,
-    SelectElementOptionOrOptgroup, SelectElementRequest, SimpleDialogRequest, TraversalId,
-    WebResourceRequest, WebResourceResponse, WebResourceResponseMsg,
+    NewWebViewDetails, Notification, PermissionFeature, PromptResponse, PushSubscriptionData,
+    RgbColor, ScreenGeometry, SelectElementOptionOrOptgroup, SelectElementRequest,
+    SimpleDialogRequest, TraversalId, WebResourceRequest, WebResourceResponse,
+    WebResourceResponseMsg,
 };
 use paint_api::rendering_context::RenderingContext;
 use servo_base::generic_channel::{GenericCallback, GenericSender, SendError};
@@ -31,6 +32,10 @@ use crate::{RegisterOrUnregister, Servo, WebView, WebViewBuilder};
 /// asynchronously. If not handled, the request will automatically be allowed.
 pub struct NavigationRequest {
     pub url: Url,
+    /// Whether this navigation targets the WebView's top-level frame (as opposed to
+    /// one of its inner frames). Embedder navigation policies that govern "which site
+    /// the app is on" should only apply to top-level navigations.
+    pub is_top_level: bool,
     pub(crate) pipeline_id: PipelineId,
     pub(crate) constellation_proxy: ConstellationProxy,
     pub(crate) response_sent: bool,
@@ -1068,6 +1073,21 @@ pub trait WebViewDelegate {
 
     /// Request to display a notification.
     fn show_notification(&self, _webview: WebView, _notification: Notification) {}
+
+    /// namsan push bridge: page content requested a Web Push subscription for
+    /// its origin (`create == true`) or a read-only lookup of the existing one
+    /// (`create == false`). The default implementation drops the responder,
+    /// which closes the channel and rejects the page's `subscribe()` promise
+    /// (and resolves `getSubscription()` with null).
+    fn request_push_subscription(
+        &self,
+        _webview: WebView,
+        _origin: String,
+        _create: bool,
+        responder: GenericSender<Option<PushSubscriptionData>>,
+    ) {
+        drop(responder);
+    }
 
     /// A console message was logged by content in this [`WebView`].
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Console_API>

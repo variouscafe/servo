@@ -12,8 +12,8 @@ use servo::{
     AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
     CreateNewWebViewRequest, Cursor, DeviceIndependentIntRect, DeviceIndependentPixel,
     DeviceIntPoint, DeviceIntSize, DevicePixel, EmbedderControl, EmbedderControlId, InputEventId,
-    InputEventResult, PermissionRequest, RenderingContext, ScreenGeometry, WebView, WebViewBuilder,
-    WebViewId,
+    InputEventResult, NavigationRequest, Notification, PermissionRequest, PushSubscriptionData,
+    RenderingContext, ScreenGeometry, WebView, WebViewBuilder, WebViewId,
 };
 use url::Url;
 
@@ -32,6 +32,9 @@ pub(crate) const LINE_WIDTH: f32 = 76.0;
 pub(crate) const MIN_WINDOW_INNER_SIZE: DeviceIntSize = DeviceIntSize::new(100, 100);
 
 static SERVOSHELL_WINDOW_ID: AtomicU64 = AtomicU64::new(0);
+
+/// namsan: 상주할 앱 웹뷰 상한 — 경로① WebViewPool(LRU 4)과 동일 기준.
+pub(crate) const NAMSAN_RESIDENT_WEBVIEWS: usize = 4;
 
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub(crate) struct ServoShellWindowId(u64);
@@ -66,6 +69,9 @@ pub(crate) struct ServoShellWindow {
     pending_favicon_loads: RefCell<Vec<WebViewId>>,
     /// Pending [`UserInterfaceCommand`] that have yet to be processed by the main loop.
     pending_commands: RefCell<Vec<UserInterfaceCommand>>,
+    /// namsan: 홈에 등록된 앱 ↔ 웹뷰 매핑(최근 사용 순). 앱 전환 시 재로드 없이
+    /// 해당 웹뷰를 활성화하기 위한 상주 풀이다.
+    namsan_apps: RefCell<Vec<(String, WebViewId)>>,
 }
 
 pub(crate) enum TopLevelWebViewCreationRequest {
@@ -83,6 +89,7 @@ impl ServoShellWindow {
             needs_repaint: Default::default(),
             pending_favicon_loads: Default::default(),
             pending_commands: Default::default(),
+            namsan_apps: Default::default(),
         }
     }
 
@@ -247,11 +254,58 @@ impl ServoShellWindow {
         if webview_collection.remove(webview_id).is_none() {
             return;
         }
+        // namsan: 컬렉션에서 사진 웹뷰는 앱 매핑에서도 제거 — 스테일 엔트리가
+        // 활성화 assert를 깨는 크래시 원인이므로 닫는 경로 전부에서 여기서 정리.
+        self.namsan_apps.borrow_mut().retain(|(_, id)| *id != webview_id);
         self.platform_window
             .dismiss_embedder_controls_for_webview(webview_id);
 
         self.set_needs_update();
         self.set_needs_repaint();
+    }
+
+    /// namsan: 앱→웹뷰 등록/갱신(최근 사용 순으로 앞에 배치).
+    pub(crate) fn namsan_touch_app(&self, app_id: &str, webview_id: WebViewId) {
+        let mut apps = self.namsan_apps.borrow_mut();
+        apps.retain(|(id, _)| id != app_id);
+        apps.insert(0, (app_id.to_owned(), webview_id));
+    }
+
+    /// namsan: 앱에 해당하는 상주 웹뷰.
+    pub(crate) fn namsan_app_webview(&self, app_id: &str) -> Option<WebViewId> {
+        self.namsan_apps
+            .borrow()
+            .iter()
+            .find(|(id, _)| id == app_id)
+            .map(|(_, webview_id)| *webview_id)
+    }
+
+    /// namsan: 아직 앱에 배정되지 않은 웹뷰가 있는지(시작 직후 판별용).
+    pub(crate) fn namsan_apps_is_empty(&self) -> bool {
+        self.namsan_apps.borrow().is_empty()
+    }
+
+    /// namsan: 앱에 배정된 웹뷰 id 전체.
+    pub(crate) fn namsan_app_ids(&self) -> Vec<WebViewId> {
+        self.namsan_apps.borrow().iter().map(|(_, id)| *id).collect()
+    }
+
+    /// namsan: 상주 웹뷰 상한. 오래된 것부터 닫는다(활성 웹뷰는 닫지 않는다).
+    /// 엔트리 제거는 close_webview가 담당한다.
+    pub(crate) fn namsan_trim_apps(&self, keep: usize, active: WebViewId) {
+        while self.namsan_apps.borrow().len() > keep {
+            let Some(victim) = self
+                .namsan_apps
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(_, id)| *id != active)
+                .map(|(_, id)| *id)
+            else {
+                break;
+            };
+            self.close_webview(victim);
+        }
     }
 
     pub(crate) fn notify_favicon_changed(&self, webview: WebView) {
@@ -455,6 +509,30 @@ pub(crate) trait PlatformWindow {
     }
     fn show_permission_dialog(&self, _: WebViewId, _: PermissionRequest) {}
     fn show_http_authentication_dialog(&self, _: WebViewId, _: AuthenticationRequest) {}
+    /// namsan: 표시할 웹 알림(Notification API). 기본 구현은 무시한다.
+    fn show_notification(&self, _notification: Notification) {}
+    /// namsan push bridge: 해당 origin의 Web Push 구독 생성(create)/조회.
+    /// 조회(create == false)에서 없으면 None — 새로 만들지 않는다(사양).
+    fn request_push_subscription(
+        &self,
+        _origin: String,
+        _create: bool,
+    ) -> Option<PushSubscriptionData> {
+        None
+    }
+    /// namsan push bridge: 임의 스레드에서 구독 생성/조회를 수행할 수 있는
+    /// Send 작업 핸들(안드로이드 JNI). None이면 동기 경로로 폴백한다.
+    fn push_subscription_worker(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(String, bool) -> Option<PushSubscriptionData> + Send + Sync>>
+    {
+        None
+    }
+    /// namsan 내비 정책 적용(기본: 허용 — 데스크톱 등 정책 미적용 플랫폼).
+    /// [source]는 탐색을 요청한 웹뷰의 현재 URL(상주 웹뷰가 여럿이어도 정확).
+    fn namsan_handle_navigation(&self, _source: Option<Url>, request: NavigationRequest) {
+        request.allow();
+    }
 
     fn notify_input_event_handled(
         &self,

@@ -4,6 +4,144 @@
 
 //! Shared state and methods for desktop and EGL implementations.
 
+/// namsan 진단(2026-10-30): 페이지 콘솔·미포착 예외를 VPS 릴레이(3000 포트
+/// 미러의 404 액세스 로그)로 전송한다. 폰 실기에서 logcat 없이 게임(wgpu/Bevy)
+/// 진단 데이터를 받기 위한 것 — 안드로이드 전용, fire-and-forget.
+/// 기본 off: 진단 세션에서 Kotlin이 servo 초기화 전에 NAMSAN_CONSOLE_RELAY=1
+/// 환경변수를 설정할 때만 켜진다(사용자 콘솔이 외부로 나가는 행위라 게이트 필수).
+mod console_relay {
+    use std::io::Write;
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Duration;
+
+    const HOST: &str = "221.143.21.29";
+    const PORT: u16 = 3000;
+
+    fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var("NAMSAN_CONSOLE_RELAY").is_ok_and(|v| v == "1"))
+    }
+
+    fn queue() -> &'static Mutex<Vec<String>> {
+        static QUEUE: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+        QUEUE.get_or_init(|| {
+            if enabled() {
+                std::thread::Builder::new()
+                    .name("namsan-console-relay".to_owned())
+                    .spawn(|| {
+                        loop {
+                            std::thread::sleep(Duration::from_millis(900));
+                            flush();
+                        }
+                    })
+                    .ok();
+            }
+            Mutex::new(Vec::new())
+        })
+    }
+
+    pub fn push(line: String) {
+        if !enabled() {
+            return;
+        }
+        let mut q = queue().lock().unwrap();
+        // 홍수 방지: 400줄까지. 넘치면 최근 것을 버린다.
+        if q.len() < 400 {
+            q.push(truncate_chars(&shorten_paths(&line), 500));
+        }
+    }
+
+    /// 긴 cargo 레지스트리 경로를 축약해 본문이 잘리지 않게 한다.
+    fn shorten_paths(line: &str) -> String {
+        // /Users/<user>/.cargo/registry/src/<hash>/<crate>-<ver>/src/... → <crate>:...
+        let mut out = line.to_owned();
+        if let Some(pos) = out.find(".cargo/registry/src/") {
+            if let Some(rest_start) = out[pos..].find("/src/") {
+                let rest = out[pos + rest_start + 5..].to_owned();
+                let head = &out[..pos];
+                // 크레이트 이름: 경로 세그먼트 마지막 두 개(crate-ver)
+                let segs: Vec<&str> = out[..pos + rest_start].rsplit('/').collect();
+                let crate_name = segs
+                    .iter()
+                    .find(|s| s.contains('-') || s.chars().next().map(|c| c.is_alphabetic()).unwrap_or(false))
+                    .copied()
+                    .unwrap_or("crate");
+                out = format!("{head}{crate_name}: {rest}");
+            }
+        }
+        out
+    }
+
+    fn truncate_chars(s: &str, max: usize) -> String {
+        s.chars().take(max).collect()
+    }
+
+    /// 안전한 URL 인코딩 — [A-Za-z0-9._~-] 외 전부 퍼센트 인코딩(UTF-8 바이트 단위).
+    fn encode(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for &b in s.as_bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'~' | b'-' => {
+                    out.push(b as char)
+                },
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+
+    fn flush() {
+        let lines: Vec<String> = {
+            let mut q = queue().lock().unwrap();
+            if q.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *q)
+        };
+        let payload = format!(
+            "{{\"page\":\"servo-console\",\"lines\":{}}}",
+            serde_json::to_string(&lines).unwrap_or_else(|_| "[]".to_owned())
+        );
+        let encoded = encode(&payload);
+        if encoded.len() > 60_000 {
+            // 과대: 절반만 시도(나머지 폐기 — 진단 스트림이니 충분)
+            flush_half(encoded);
+            return;
+        }
+        send(&encoded);
+    }
+
+    fn flush_half(mut encoded: String) {
+        encoded.truncate(30_000);
+        // 잘린 퍼센트 시퀀스 정리
+        while encoded.len() >= 2 && encoded[encoded.len() - 3..].starts_with('%') {
+            encoded.truncate(encoded.len() - 3);
+        }
+        send(&encoded);
+    }
+
+    fn send(encoded: &str) {
+        let Ok(addr) = (HOST, PORT).to_socket_addrs() else {
+            return;
+        };
+        for addr in addr {
+            let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+            else {
+                continue;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let request = format!(
+                "GET /__probe_report__?d={encoded} HTTP/1.1\r\nHost: {HOST}:{PORT}\r\nConnection: close\r\nUser-Agent: namsan-relay\r\n\r\n"
+            );
+            if stream.write_all(request.as_bytes()).is_ok() {
+                let _ = stream.flush();
+                return; // 첫 연결 가능 주소로 성공하면 종료
+            }
+        }
+    }
+}
+
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -32,7 +170,8 @@ use servo::{
     AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, CSSPixel,
     ConsoleLogLevel, CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl,
     EmbedderControlId, EventLoopWaker, GenericSender, InputEvent, InputEventId, InputEventResult,
-    JSValue, LoadStatus, PermissionRequest, PrefValue, Preferences, ScreenshotCaptureError, Servo,
+    JSValue, LoadStatus, NavigationRequest, PermissionRequest, PrefValue, Preferences,
+    ScreenshotCaptureError, Servo,
     ServoDelegate, ServoError, TraversalId, UserContentManager, WebDriverCommandMsg,
     WebDriverJSResult, WebDriverLoadStatus, WebDriverScriptCommand, WebDriverSenders, WebView,
     WebViewDelegate, WebViewId,
@@ -923,12 +1062,54 @@ impl WebViewDelegate for RunningAppState {
             .notify_favicon_changed(webview);
     }
 
+    /// namsan: "사이트=앱" 정책 — 판정은 플랫폼 창(Rust)에서 수행한다.
+    /// 판정 소스는 이 웹뷰의 현재 URL(앱별 웹뷰가 상주해도 서로 섞이지 않게).
+    fn request_navigation(&self, webview: WebView, request: NavigationRequest) {
+        self.platform_window_for_webview(&webview)
+            .namsan_handle_navigation(webview.url(), request);
+    }
+
+    /// namsan: Notification API — 플랫폼 창(→ HostTrait → JNI)으로 전달.
+    fn show_notification(&self, webview: WebView, notification: servo::Notification) {
+        self.platform_window_for_webview(&webview)
+            .show_notification(notification);
+    }
+
+    /// namsan push bridge: 구독 생성(create)/조회를 플랫폼(앱)에 위임한다.
+    /// 생성은 릴레이 등록의 네트워크 왕복(수백 ms)을 동반하므로, 플랫폼이
+    /// Send 가능한 작업 핸들을 주면 별도 스레드에서 수행해 GL/임베더
+    /// 스레드가 멈추지 않게 한다. 핸들이 없는 플랫폼은 동기 경로로 폴백.
+    fn request_push_subscription(
+        &self,
+        webview: WebView,
+        origin: String,
+        create: bool,
+        responder: servo::GenericSender<Option<servo::PushSubscriptionData>>,
+    ) {
+        let platform_window = self.platform_window_for_webview(&webview);
+        if let Some(worker) = platform_window.push_subscription_worker() {
+            std::thread::Builder::new()
+                .name("namsan-push-subscribe".to_owned())
+                .spawn(move || {
+                    let _ = responder.send(worker(origin, create));
+                })
+                .ok();
+            return;
+        }
+        let result = platform_window.request_push_subscription(origin, create);
+        let _ = responder.send(result);
+    }
+
     fn notify_crashed(&self, webview: WebView, reason: String, backtrace: Option<String>) {
         self.platform_window_for_webview(&webview)
             .notify_crashed(webview, reason, backtrace);
     }
 
     fn show_console_message(&self, webview: WebView, level: ConsoleLogLevel, message: String) {
+        // namsan 진단: 안드로이드에서 웹뷰 경로 콘솔이 빈 구현으로 사라지므로
+        // 릴레이로만이라도 남긴다.
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        console_relay::push(format!("[{level:?}] {message}"));
         self.platform_window_for_webview(&webview)
             .show_console_message(level, &message);
     }
@@ -958,6 +1139,9 @@ impl ServoDelegate for ServoShellServoDelegate {
     }
 
     fn show_console_message(&self, level: ConsoleLogLevel, message: String) {
+        // namsan 진단: 웹뷰 컨텍스트 없는 콘솔도 릴레이(안드로이드).
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        console_relay::push(format!("[{level:?}] {message}"));
         // For messages without a WebView context, apply platform-specific behavior
         #[cfg(not(any(target_os = "android", target_env = "ohos")))]
         println!("{message}");

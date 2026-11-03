@@ -10,6 +10,9 @@ pub(crate) mod extendableevent;
 pub(crate) mod extendablemessageevent;
 pub(crate) mod navigationpreloadmanager;
 pub(crate) mod notification;
+pub(crate) mod pushmanager;
+pub(crate) mod pushsubscription;
+pub(crate) mod pushsubscriptionkeys;
 #[allow(
     clippy::module_inception,
     reason = "The interface name is Serviceworker"

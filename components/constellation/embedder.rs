@@ -36,8 +36,10 @@ pub enum ConstellationToEmbedderMsg {
     ),
     /// Whether or not to allow script to open a new tab/browser
     AllowOpeningWebView(WebViewId, GenericSender<Option<NewWebViewDetails>>),
-    /// Whether or not to allow a pipeline to load a url.
-    AllowNavigationRequest(WebViewId, PipelineId, ServoUrl),
+    /// Whether or not to allow a pipeline to load a url. The flag is `true` when the
+    /// navigation targets the WebView's top-level frame (embedder navigation policies
+    /// usually must not apply to inner frames).
+    AllowNavigationRequest(WebViewId, PipelineId, ServoUrl, bool),
     /// The history state has changed.
     HistoryChanged(WebViewId, Vec<ServoUrl>, usize),
     /// A pipeline exited, whether cleanly or because its content process died.

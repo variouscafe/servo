@@ -881,6 +881,14 @@ impl Notification {
             }
         }
 
+        // 페치할 리소스가 하나도 없으면(아이콘·이미지·뱃지 없는 알림 — 흔한
+        // 경우) 아래 루프가 빈 채로 지나가 show()가 영원히 불리지 않았다.
+        // 사양의 fetch steps는 대기할 페치가 없으면 즉시 표시 단계로 간다.
+        if pending_requests.is_empty() {
+            self.show();
+            return;
+        }
+
         for (request, resource_type) in pending_requests {
             self.fetch_and_show_when_ready(request, resource_type);
         }

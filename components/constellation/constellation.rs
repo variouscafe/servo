@@ -4112,11 +4112,16 @@ where
             self.handle_allow_navigation_response(source_id, true);
         } else {
             // Allow the embedder to handle the url itself
+            let is_top_level = self
+                .browsing_contexts
+                .get(&BrowsingContextId::from(webview_id))
+                .is_some_and(|ctx| ctx.pipeline_id == source_id);
             self.constellation_to_embedder_proxy.send(
                 ConstellationToEmbedderMsg::AllowNavigationRequest(
                     webview_id,
                     source_id,
                     load_data.url,
+                    is_top_level,
                 ),
             );
         }

@@ -2,11 +2,36 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use servo::{InputMethodControl, LoadStatus, SelectElement, WebViewId};
+use servo::{
+    InputMethodControl, LoadStatus, Notification, PushSubscriptionData, SelectElement, WebViewId,
+};
 
 /// Callbacks implemented by embedder. Called by our RunningAppState, generally on behalf of Servo.
 pub trait HostTrait {
     fn show_alert(&self, message: String);
+    /// namsan: 표시할 웹 알림(Notification API). 기본 구현은 무시한다.
+    fn show_notification(&self, _notification: Notification) {}
+    /// namsan: 정책상 외부로 위임할 내비게이션(앱이 시스템 브라우저/앱으로 연다).
+    fn on_external_navigation(&self, _url: String) {}
+    /// namsan: 페이지가 알림 권한을 요청했다. 앱 설정·시스템 권한 상태로 즉시 판정한다.
+    fn request_notification_permission(&self) -> bool {
+        false
+    }
+    /// namsan push bridge: 해당 origin의 Web Push 구독 생성(create)/조회.
+    /// 조회에서 없으면 `None` — 새로 만들지 않는다. 생성 경로의 `None`은
+    /// 구독 실패(페이지의 프라미스 거부).
+    fn request_push_subscription(&self, _origin: String, _create: bool) -> Option<PushSubscriptionData> {
+        None
+    }
+    /// namsan push bridge: 임의 스레드에서 구독 생성/조회를 수행할 수 있는
+    /// Send 작업 핸들(안드로이드 JNI — 릴레이 등록 I/O가 GL 스레드를 멈추지
+    /// 않게 한다). None이면 동기 경로로 폴백.
+    fn push_subscription_worker(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(String, bool) -> Option<PushSubscriptionData> + Send + Sync>>
+    {
+        None
+    }
     /// Notify that the load status of the page has changed.
     ///
     /// Started:

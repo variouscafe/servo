@@ -13,15 +13,19 @@ use servo::{
     DeviceIndependentIntRect, DeviceIndependentPixel, DeviceIntSize, DevicePixel, DevicePoint,
     DeviceVector2D, EmbedderControl, EmbedderControlId, EventLoopWaker, ImeEvent, InputEvent,
     KeyboardEvent, LoadStatus, MouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
-    Opts, Preferences, RefreshDriver, RenderingContext, ScreenGeometry, Scroll, Servo,
-    ServoBuilder, SimpleDialog, TouchEvent, TouchEventType, TouchId, TouchPointerType,
-    UserContentManager, WebView, WebViewId, WindowRenderingContext, convert_rect_to_css_pixel,
+    NavigationRequest, Notification, Opts, PermissionFeature, PermissionRequest, Preferences,
+    PushSubscriptionData,
+    RefreshDriver, RenderingContext, ScreenGeometry, Scroll, Servo, ServoBuilder, SimpleDialog,
+    TouchEvent, TouchEventType, TouchId, TouchPointerType, UserContentManager, WebView, WebViewId,
+    WindowRenderingContext, convert_rect_to_css_pixel,
 };
 use url::Url;
 
 use crate::egl::host_trait::HostTrait;
+use crate::egl::namsan_nav;
 use crate::prefs::ServoShellPreferences;
 use crate::running_app_state::{RunningAppState, UserInterfaceCommand};
+use crate::window::NAMSAN_RESIDENT_WEBVIEWS;
 use crate::window::{
     PlatformWindow, ServoShellWindow, ServoShellWindowId, TopLevelWebViewCreationRequest,
 };
@@ -50,6 +54,25 @@ pub(crate) struct EmbeddedPlatformWindow {
 }
 
 impl PlatformWindow for EmbeddedPlatformWindow {
+    /// namsan 내비 정책 적용 — 같은 사이트(호스트/서브도메인)만 허용하고
+    /// 나머지는 외부 위임(호스트 콜백) 또는 차단. 판정은 전부 Rust 안에서.
+    /// 서브프레임(iframe) 내비게이션은 페이지 내부 구성요소이므로 정책 대상이
+    /// 아니다 — 차단하면 reCAPTCHA·동영상 임베드 등이 전부 부서진다.
+    fn namsan_handle_navigation(&self, source: Option<Url>, request: NavigationRequest) {
+        if !request.is_top_level {
+            request.allow();
+            return;
+        }
+        match crate::egl::namsan_nav::classify_navigation(source.as_ref(), &request.url) {
+            namsan_nav::NavDecision::InApp => request.allow(),
+            namsan_nav::NavDecision::External(url) => {
+                self.host.on_external_navigation(url);
+                request.deny();
+            },
+            namsan_nav::NavDecision::Block => request.deny(),
+        }
+    }
+
     fn as_headed_window(&self) -> Option<&Self> {
         Some(self)
     }
@@ -205,6 +228,43 @@ impl PlatformWindow for EmbeddedPlatformWindow {
         {
             visible_input_methods.remove(index);
             self.host.on_ime_hide();
+        }
+    }
+
+    /// namsan: Notification API — HostTrait(→ JNI → 앱)으로 전달.
+    fn show_notification(&self, notification: Notification) {
+        self.host.show_notification(notification);
+    }
+
+    /// namsan push bridge: 구독 생성/조회를 앱에 위임한다.
+    fn request_push_subscription(
+        &self,
+        origin: String,
+        create: bool,
+    ) -> Option<PushSubscriptionData> {
+        self.host.request_push_subscription(origin, create)
+    }
+
+    /// namsan push bridge: 백그라운드 구독 작업 핸들(GL 스레드 블로킹 방지).
+    fn push_subscription_worker(
+        &self,
+    ) -> Option<std::sync::Arc<dyn Fn(String, bool) -> Option<PushSubscriptionData> + Send + Sync>>
+    {
+        self.host.push_subscription_worker()
+    }
+
+    /// namsan: 알림 권한은 앱 차원 정책(앱 설정 + 시스템 권한 상태)으로 즉시 판정하고,
+    /// 그 외 권한 요청은 기본 동작(거부)을 유지한다.
+    fn show_permission_dialog(&self, _: WebViewId, permission_request: PermissionRequest) {
+        match permission_request.feature() {
+            PermissionFeature::Notifications => {
+                if self.host.request_notification_permission() {
+                    permission_request.allow();
+                } else {
+                    permission_request.deny();
+                }
+            },
+            _ => permission_request.deny(),
         }
     }
 
@@ -409,6 +469,95 @@ impl App {
     pub fn load_uri(&self, location: &str) {
         self.window()
             .queue_user_interface_command(UserInterfaceCommand::Go(location.into()));
+        self.spin_event_loop();
+    }
+
+    /// namsan: 앱 열기 — 해당 앱의 상주 웹뷰를 활성화한다(재로드 없음).
+    /// 없으면 새로 만들고, 상한을 넘으면 오래된 웹뷰부터 정리한다.
+    /// 앱 전환 리로드를 제거하는 핵심 경로다.
+    pub fn namsan_open_app(&self, app_id: &str, url: &str) {
+        let window = self.window();
+
+        // 0) 미추적 웹뷰(window.open·target=_blank) 정리 — 전환 UI가 앱 단위라
+        //    다시 띄울 방법이 없는 웹뷰는 좀비가 된다. 활성 웹뷰와 앱에 배정된
+        //    웹뷰만 남긴다(close_webview가 앱 매핑도 정리한다).
+        let active_now = window.active_or_newest_webview().map(|webview| webview.id());
+        let tracked = window.namsan_app_ids();
+        for id in window.webview_ids() {
+            if Some(id) != active_now && !tracked.contains(&id) {
+                window.close_webview(id);
+            }
+        }
+
+        // 1) 이미 상주하는 앱 웹뷰 → 활성화만. 비활성 사이에 바뀐 뷰포트 크기도
+        //    다시 적용해 준다. 방어형 activate — 엔트리 정합성은 close에서 지키지만
+        //    이중 안전장치다.
+        if let Some(id) = window.namsan_app_webview(app_id) {
+            self.activate_webview(id);
+            window.namsan_touch_app(app_id, id);
+            if let Some(webview) = window.webview_by_id(id) {
+                if let Some(embedded) = window.platform_window().as_headed_window() {
+                    let viewport = embedded.viewport_rect.borrow().clone();
+                    webview.resize(PhysicalSize::new(
+                        viewport.size.width as u32,
+                        viewport.size.height as u32,
+                    ));
+                    // 활성화에는 로드 이벤트가 없다 — UI가 스플래시를 걷도록
+                    // URL 콜백을 직접 발화한다. 캐시도 갱신해 diff가 같은 값을
+                    // 다시 보내는 일이 없게 한다.
+                    let url_now = webview.url();
+                    *embedded.current_url.borrow_mut() = url_now.clone();
+                    embedded.host.on_url_changed(
+                        url_now.map(|u| u.to_string()).unwrap_or_default(),
+                    );
+                }
+            }
+            self.spin_event_loop();
+            return;
+        }
+
+        // 2) 첫 앱: 시작 시 만든 미사용 웹뷰를 그대로 가져온다(about:blank 등).
+        //    워밍업으로 이미 같은 URL을 로드 중이면 재로드하지 않는다.
+        let existing = if window.namsan_apps_is_empty() && window.webview_ids().len() == 1 {
+            window.active_or_newest_webview()
+        } else {
+            None
+        };
+        if let Some(webview) = existing {
+            let id = webview.id();
+            // 정규화된 Url 객체끼리 비교(문자열 직렬화 차이로 웜 판정을 놓치지 않게).
+            let warm = webview
+                .url()
+                .is_some_and(|u| Url::parse(url).is_ok_and(|parsed| parsed == u));
+            window.activate_webview(id);
+            if !warm {
+                window.queue_user_interface_command(UserInterfaceCommand::Go(url.to_owned()));
+            } else if let Some(embedded) = window.platform_window().as_headed_window() {
+                // 웜 시작은 로드 이벤트가 없다 — 위와 같은 이유로 직접 알린다.
+                *embedded.current_url.borrow_mut() = webview.url();
+                embedded.host.on_url_changed(url.to_owned());
+            }
+            window.namsan_touch_app(app_id, id);
+            self.spin_event_loop();
+            return;
+        }
+
+        // 3) 새 웹뷰 생성 + 상주 목록 등록 + 상한 초과분 정리.
+        let Ok(parsed) = Url::parse(url) else {
+            warn!("namsan_open_app: URL 파싱 실패 — {url}");
+            // 실패해도 스플래시가 영구 걸리지 않게 UI 갱신 신호는 보낸다.
+            if let Some(embedded) = window.platform_window().as_headed_window() {
+                embedded.host.on_url_changed(url.to_owned());
+            }
+            return;
+        };
+        let webview = self.window().create_and_activate_toplevel_webview(
+            self.state.clone(),
+            TopLevelWebViewCreationRequest::WithUrl(parsed),
+        );
+        let id = webview.id();
+        window.namsan_touch_app(app_id, id);
+        window.namsan_trim_apps(NAMSAN_RESIDENT_WEBVIEWS, id);
         self.spin_event_loop();
     }
 

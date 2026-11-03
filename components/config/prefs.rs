@@ -467,7 +467,8 @@ impl Preferences {
             dom_intersection_observer_enabled: false,
             dom_microdata_testing_enabled: false,
             dom_navigator_protocol_handlers_enabled: false,
-            dom_notification_enabled: false,
+            // namsan(경로③): 알림·푸시 브릿지의 기본 진입점 — 앱이 시스템 노티로 연결한다.
+            dom_notification_enabled: true,
             dom_parallel_css_parsing_enabled: true,
             dom_offscreen_canvas_enabled: false,
             dom_permissions_enabled: false,
@@ -476,7 +477,8 @@ impl Preferences {
             dom_sanitizer_enabled: false,
             dom_script_asynch: true,
             dom_storage_manager_api_enabled: false,
-            dom_serviceworker_enabled: false,
+            // namsan(경로③): pushManager 구독 표면이 SW 등록에 붙어 있으므로 함께 켠다.
+            dom_serviceworker_enabled: true,
             dom_serviceworker_timeout_seconds: 60,
             dom_sharedworker_enabled: true,
             dom_servo_helpers_enabled: false,

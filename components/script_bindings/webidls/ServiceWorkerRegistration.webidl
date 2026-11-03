@@ -9,6 +9,8 @@ interface ServiceWorkerRegistration : EventTarget {
   readonly attribute ServiceWorker? waiting;
   readonly attribute ServiceWorker? active;
   [SameObject] readonly attribute NavigationPreloadManager navigationPreload;
+  // namsan push bridge: https://w3c.github.io/push-api/#dom-serviceworkerregistration-pushmanager
+  [SameObject] readonly attribute PushManager pushManager;
 
   readonly attribute USVString scope;
   readonly attribute ServiceWorkerUpdateViaCache updateViaCache;

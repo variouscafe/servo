@@ -786,6 +786,15 @@ impl ServoInner {
                     None => self.delegate.borrow().show_notification(notification),
                 }
             },
+            // namsan push bridge: 웹뷰 핸들이 없으면 responder가 drop되어
+            // 페이지의 subscribe() 프라미스는 거부된다(안전한 기본 동작).
+            EmbedderMsg::RequestPushSubscription(webview_id, origin, create, responder) => {
+                if let Some(webview) = webview_id.and_then(|webview_id| self.get_webview_handle(webview_id)) {
+                    webview
+                        .delegate()
+                        .request_push_subscription(webview, origin, create, responder);
+                }
+            },
             EmbedderMsg::ShowConsoleApiMessage(webview_id, level, message) => {
                 match webview_id.and_then(|webview_id| self.get_webview_handle(webview_id)) {
                     Some(webview) => webview
@@ -863,11 +872,13 @@ impl ServoInner {
                 webview_id,
                 pipeline_id,
                 servo_url,
+                is_top_level,
             ) => {
                 if let Some(webview) = self.get_webview_handle(webview_id) {
                     let request = NavigationRequest {
                         url: servo_url.into_url(),
                         pipeline_id,
+                        is_top_level,
                         constellation_proxy: self.constellation_proxy.clone(),
                         response_sent: false,
                     };
