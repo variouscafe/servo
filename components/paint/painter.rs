@@ -205,7 +205,19 @@ impl Painter {
 
         // Use same texture upload method as Gecko with ANGLE:
         // https://searchfox.org/mozilla-central/source/gfx/webrender_bindings/src/bindings.rs#1215-1219
-        let upload_method = if webrender_gl.get_string(RENDERER).starts_with("ANGLE") {
+        //
+        // namsan(2026-11-03): 안드로이드에서는 전부 Immediate를 쓴다. PixelBuffer
+        // 경로는 webrender UploadPBOPool이 매 프레임 glClientWaitSync(타임아웃 0
+        // 폴)로 펜스를 확인하는데, 에뮬레이터 트랜슬레이터(AEMU)는 이 폴을 파이프
+        // 동기 읽기로 처리해 렌더 스레드가 교착으로 얼어붙는다(m.naver.com 로드
+        // 중 ANR, 스택: UploadPBOPool::begin_frame → client_wait_sync). 렌더러
+        // 문자열 판정(starts_with "ANGLE")은 "Android Emulator OpenGL ES
+        // Translator (ANGLE…)"를 놓치고, 실기에서도 같은 begin_frame 대기에서
+        // 이미지 많은 페이지가 스켈레톤에 멈춘다. Immediate는 glTexSubImage
+        // 직접 업로드로 PBO·펜스가 아예 없다.
+        let upload_method = if cfg!(any(target_os = "android", target_env = "ohos")) ||
+            webrender_gl.get_string(RENDERER).starts_with("ANGLE")
+        {
             UploadMethod::Immediate
         } else {
             UploadMethod::PixelBuffer(ONE_TIME_USAGE_HINT)
