@@ -194,6 +194,11 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
             };
 
         preferences.set_value("viewport_meta_enabled", servo::PrefValue::Bool(true));
+        // namsan(경로③): 알림·푸시 브릿지 활성화 — 업스트림 기본값(false)은 그대로 두고
+        // servoshell EGL 계층에서만 켠다(components/config 전역 뒤집기 회피).
+        preferences.set_value("dom_notification_enabled", servo::PrefValue::Bool(true));
+        // pushManager 구독 표면이 SW 등록에 붙어 있으므로 함께 켠다.
+        preferences.set_value("dom_serviceworker_enabled", servo::PrefValue::Bool(true));
 
         crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
 

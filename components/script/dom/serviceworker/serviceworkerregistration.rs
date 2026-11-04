@@ -17,14 +17,17 @@ use servo_url::ServoUrl;
 use uuid::Uuid;
 
 use crate::dom::RootedPromise;
+use crate::dom::bindings::codegen::Bindings::NotificationBinding::{
+    GetNotificationOptions, NotificationOptions, NotificationPermission,
+};
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerRegistrationBinding::{
     ServiceWorkerRegistrationMethods, ServiceWorkerUpdateViaCache,
 };
-use crate::dom::bindings::error::Error;
+use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
-use crate::dom::bindings::str::{ByteString, USVString};
+use crate::dom::bindings::str::{ByteString, DOMString, USVString};
 use crate::dom::cookiestoremanager::CookieStoreManager;
 use crate::dom::eventtarget::EventTarget;
 use crate::dom::globalscope::GlobalScope;
@@ -32,6 +35,9 @@ use crate::dom::navigationpreloadmanager::NavigationPreloadManager;
 use crate::dom::pushmanager::PushManager;
 use crate::dom::promise::Promise;
 use crate::dom::serviceworker::ServiceWorker;
+use crate::dom::serviceworker::notification::{
+    Notification, create_notification_with_settings_object, get_notifications_permission_state,
+};
 use crate::dom::window::Window;
 use crate::dom::workerglobalscope::prepare_workerscope_init;
 
@@ -302,5 +308,51 @@ impl ServiceWorkerRegistrationMethods<crate::DomTypeHolder> for ServiceWorkerReg
         // CookieStoreManager object.
         self.cookie_manager
             .or_init(|| CookieStoreManager::new(cx, &self.global(), self))
+    }
+
+    /// <https://notifications.spec.whatwg.org/#dom-serviceworkerregistration-shownotification>
+    /// namsan push bridge: SW 미실행 대신 persistent 노티를 만들어 바로 표시한다.
+    /// 표시·클릭 처리는 앱(시스템 노티)이 대행.
+    fn ShowNotification(
+        &self,
+        cx: &mut JSContext,
+        title: DOMString,
+        options: &NotificationOptions,
+    ) -> Fallible<RootedPromise> {
+        let global = self.global();
+        let promise = Promise::new(cx, &global);
+
+        // step 5: permission state가 "granted"가 아니면 TypeError로 거부.
+        if get_notifications_permission_state(&global) != NotificationPermission::Granted {
+            promise.reject_error(
+                cx,
+                Error::Type(c"Notification permission has not been granted.".to_owned()),
+            );
+            return Ok(promise);
+        }
+
+        // step 7: create a notification with a settings object — 검증 실패(silent+vibrate,
+        // renotify+빈 tag)는 생성자와 동일하게 TypeError로 던진다.
+        let notification =
+            create_notification_with_settings_object(cx, &global, title, options, None)?;
+
+        // step 8: notification show steps(fetch steps 경유, 리소스 없으면 즉시 표시).
+        notification.show_as_persistent_notification(self);
+
+        promise.resolve_native(cx, &());
+        Ok(promise)
+    }
+
+    /// <https://notifications.spec.whatwg.org/#dom-serviceworkerregistration-getnotifications>
+    /// namsan push bridge: 엔진이 노티 목록을 유지하지 않으므로(앱이 대행) 항상 빈 배열.
+    fn GetNotifications(
+        &self,
+        cx: &mut JSContext,
+        _filter: &GetNotificationOptions,
+    ) -> RootedPromise {
+        let promise = Promise::new(cx, &self.global());
+        let notifications: Vec<DomRoot<Notification>> = Vec::new();
+        promise.resolve_native(cx, &notifications);
+        promise
     }
 }

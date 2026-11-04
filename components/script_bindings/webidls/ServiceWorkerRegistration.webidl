@@ -18,6 +18,12 @@ interface ServiceWorkerRegistration : EventTarget {
   // [NewObject] Promise<void> update();
   [NewObject] Promise<boolean> unregister();
 
+  // namsan push bridge: https://notifications.spec.whatwg.org/#dom-serviceworkerregistration-shownotification
+  [NewObject, Throws]
+  Promise<undefined> showNotification(DOMString title, optional NotificationOptions options = {});
+  [NewObject]
+  Promise<sequence<Notification>> getNotifications(optional GetNotificationOptions filter = {});
+
   // event
   // attribute EventHandler onupdatefound;
 };

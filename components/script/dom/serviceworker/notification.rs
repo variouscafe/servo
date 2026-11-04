@@ -65,7 +65,7 @@ use crate::fetch::network_listener::{self, FetchResponseListener, ResourceTiming
 pub(crate) struct Notification {
     eventtarget: EventTarget,
     /// <https://notifications.spec.whatwg.org/#service-worker-registration>
-    serviceworker_registration: Option<Dom<ServiceWorkerRegistration>>,
+    serviceworker_registration: DomRefCell<Option<Dom<ServiceWorkerRegistration>>>,
     /// <https://notifications.spec.whatwg.org/#concept-title>
     title: TracedDOMString,
     /// <https://notifications.spec.whatwg.org/#body>
@@ -222,7 +222,7 @@ impl Notification {
         Self {
             eventtarget: EventTarget::new_inherited(),
             // A non-persistent notification is a notification whose service worker registration is null.
-            serviceworker_registration: None,
+            serviceworker_registration: DomRefCell::new(None),
             title: title.traced(),
             body: body.traced(),
             data: Heap::default(),
@@ -244,6 +244,18 @@ impl Notification {
             icon_resource: DomRefCell::new(None),
             badge_resource: DomRefCell::new(None),
         }
+    }
+
+    /// namsan push bridge: ServiceWorkerRegistration.showNotification() 표시 경로 —
+    /// persistent 노티로 만들어 표시한다. 남산은 SW를 실행하지 않으므로
+    /// 표시·클릭 처리는 앱(시스템 노티)이 대행한다.
+    /// <https://notifications.spec.whatwg.org/#dom-serviceworkerregistration-shownotification> step 5.2
+    pub(crate) fn show_as_persistent_notification(&self, registration: &ServiceWorkerRegistration) {
+        self.serviceworker_registration
+            .borrow_mut()
+            .replace(Dom::from_ref(registration));
+        // 표시 전 리소스 페치 — 아이콘·이미지가 없으면 즉시 표시(0.6.1 수정 경유).
+        self.fetch_resources_and_show_when_ready();
     }
 
     /// <https://notifications.spec.whatwg.org/#notification-show-steps>
@@ -281,7 +293,7 @@ impl Notification {
         // step 8: If notification is a non-persistent notification,
         //         then queue a task to fire an event named show on
         //         the Notification object representing notification.
-        if self.serviceworker_registration.is_none() {
+        if self.serviceworker_registration.borrow().is_none() {
             self.global()
                 .task_manager()
                 .dom_manipulation_task_source()
@@ -561,7 +573,7 @@ impl NotificationMethods<crate::DomTypeHolder> for Notification {
 
         // If notification is a non-persistent notification
         // then queue a task to fire an event named close on the Notification object representing notification.
-        if self.serviceworker_registration.is_none() {
+        if self.serviceworker_registration.borrow().is_none() {
             self.global()
                 .task_manager()
                 .dom_manipulation_task_source()
@@ -587,7 +599,7 @@ struct Action {
 }
 
 /// <https://notifications.spec.whatwg.org/#create-a-notification-with-a-settings-object>
-fn create_notification_with_settings_object(
+pub(crate) fn create_notification_with_settings_object(
     cx: &mut JSContext,
     global: &GlobalScope,
     title: DOMString,
@@ -692,7 +704,7 @@ fn validate_and_normalize_vibration_pattern(
 }
 
 /// <https://notifications.spec.whatwg.org/#get-the-notifications-permission-state>
-fn get_notifications_permission_state(global: &GlobalScope) -> NotificationPermission {
+pub(crate) fn get_notifications_permission_state(global: &GlobalScope) -> NotificationPermission {
     let permission_state = descriptor_permission_state(PermissionName::Notifications, Some(global));
     match permission_state {
         PermissionState::Granted => NotificationPermission::Granted,
