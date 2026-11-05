@@ -199,6 +199,9 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         preferences.set_value("dom_notification_enabled", servo::PrefValue::Bool(true));
         // pushManager 구독 표면이 SW 등록에 붙어 있으므로 함께 켠다.
         preferences.set_value("dom_serviceworker_enabled", servo::PrefValue::Bool(true));
+        // 네이버 등 주요 포털의 메인 번들이 IntersectionObserver를 무조건 참조한다 —
+        // 꺼져 있으면 ReferenceError로 번들 전체가 죽어 본문이 실리지 않는다(0.7.1 수정).
+        preferences.set_value("dom_intersection_observer_enabled", servo::PrefValue::Bool(true));
 
         crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
 
