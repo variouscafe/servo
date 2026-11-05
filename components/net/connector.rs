@@ -668,6 +668,11 @@ pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
 
     Client::builder(TokioExecutor {})
         .http1_title_case_headers(true)
+        // 유튜브 등 일부 사이트의 첫 응답 헤더 블록(Set-Cookie 다발)은 16KB를 넘는다(실측 ~19KB).
+        // hyper 기본값 16KB를 그대로 쓰면 h2 클라이언트가 로컬에서 스트림을
+        // PROTOCOL_ERROR로 리셋해서 "client error (SendRequest)" 네트워크 에러로 나타난다.
+        // 브라우저급 상한(Chrome 계열 256KB)으로 상향한다.
+        .http2_max_header_list_size(256 * 1024)
         // This is necessary to allow hyper to perform various background tasks for HTTP/2.
         .timer(TokioTimer::new())
         // This is necessary for hyper to reap unused idle keep-alive connections.
