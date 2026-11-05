@@ -582,18 +582,26 @@ pub fn fallback_font_families(options: FallbackFontSelectionOptions) -> Vec<&'st
                 families.push("Noto Sans Tibetan");
             },
 
+            // 한글 블록은 is_cjk의 블록 목록에 HangulSyllables가 없어
+            // (일본어·한자 계열만 열거됨) CJK 분기로 절대 들어가지 못한다 —
+            // 0.7.1까지 한글이 전면 tofu였던 원인. macOS font_list와 같이
+            // 블록을 명시적으로 매칭한다. "ko"는 현대 fonts.xml의 name 없는
+            // <family lang="ko">를 parse_family가 등록한 이름이고, Noto
+            // 이름들은 패밀리명이 명시된 옛 기기용. 마지막 "ja"는 최후의
+            // 안전망(일본 면에도 한글 글리프가 있다).
+            UnicodeBlock::HangulJamo |
+            UnicodeBlock::HangulJamoExtendedA |
+            UnicodeBlock::HangulJamoExtendedB |
+            UnicodeBlock::HangulCompatibilityJamo |
+            UnicodeBlock::HangulSyllables => {
+                families.push("ko");
+                families.push("Noto Sans CJK KR");
+                families.push("Noto Sans KR");
+                families.push("ja");
+            },
+
             _ => {
                 if is_cjk(options.character) {
-                    // Hangul first (the Korean face of the CJK
-                    // collection — lang-token names come from the
-                    // parse_family registration of nameless modern
-                    // fonts.xml entries, the Noto names cover older
-                    // devices that name the families explicitly).
-                    let hangul = matches!(options.character, '\u{AC00}'..='\u{D7A3}');
-                    if hangul {
-                        families.push("ko");
-                        families.push("Noto Sans CJK KR");
-                    }
                     families.push("MotoyaLMaru");
                     families.push("Noto Sans CJK JP");
                     families.push("Droid Sans Japanese");
