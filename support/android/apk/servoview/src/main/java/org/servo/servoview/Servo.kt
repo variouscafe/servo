@@ -72,7 +72,7 @@ fun Servo(
             modifier
                 .focusRequester(focusRequester)
                 .focusable()
-                .softKeyboardVisible(softKeyboardVisible)
+                .softKeyboardVisible(softKeyboardVisible, servo)
                 .onKeyEvent { keyEvent ->
                     when (keyEvent.type) {
                         KeyEventType.KeyDown if keyEvent.key != Key.Back -> {
@@ -89,6 +89,28 @@ fun Servo(
                                 keyEvent.nativeKeyEvent,
                             )
                             true
+                        }
+
+                        // namsan(2026-11-06): IME(BaseInputConnection dummy 경로)가
+                        // 문자를 ACTION_MULTIPLE + KEYCODE_UNKNOWN 합성 이벤트로
+                        // 전달한다. 문자열은 nativeKeyEvent.characters에 있다.
+                        KeyEventType.Unknown -> {
+                            val native = keyEvent.nativeKeyEvent
+                            if (native.action == KeyEvent.ACTION_MULTIPLE) {
+                                val chars = native.characters
+                                if (!chars.isNullOrEmpty()) {
+                                    servo.typeText(chars)
+                                    true
+                                } else if (native.unicodeChar != 0) {
+                                    servo.onKeyDown(native.keyCode, native)
+                                    servo.onKeyUp(native.keyCode, native)
+                                    true
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
                         }
 
                         else -> false
@@ -188,18 +210,21 @@ class ServoNavigator {
     }
 }
 
-private fun Modifier.softKeyboardVisible(visible: Boolean) = this then SoftKeyboardVisible(visible)
+private fun Modifier.softKeyboardVisible(visible: Boolean, servo: Servo) =
+    this then SoftKeyboardVisible(visible, servo)
 
-private data class SoftKeyboardVisible(val visible: Boolean) :
+private data class SoftKeyboardVisible(val visible: Boolean, val servo: Servo) :
     ModifierNodeElement<SoftKeyboardVisibleNode>() {
-    override fun create() = SoftKeyboardVisibleNode()
+    override fun create() = SoftKeyboardVisibleNode(servo)
 
     override fun update(node: SoftKeyboardVisibleNode) {
         node.update(visible)
     }
 }
 
-private class SoftKeyboardVisibleNode : Modifier.Node(), PlatformTextInputModifierNode {
+private class SoftKeyboardVisibleNode(private val servo: Servo) :
+    Modifier.Node(),
+    PlatformTextInputModifierNode {
     private var textInputSessionJob: Job? = null
 
     fun update(visible: Boolean) {
@@ -207,7 +232,21 @@ private class SoftKeyboardVisibleNode : Modifier.Node(), PlatformTextInputModifi
         if (visible) {
             textInputSessionJob = coroutineScope.launch {
                 establishTextInputSession {
-                    startInputMethod { _ -> BaseInputConnection(view, true) }
+                    startInputMethod { _ ->
+                        // namsan(2026-11-06): BaseInputConnection(view, fullEditor=true)는
+                        // 더미모드 합성이 꺼져 commitText가 아무 이벤트도 만들지 못하고
+                        // 사라짐 — 유튜브/네이버 등 소프트키보드 입력 불가의 원인.
+                        // 더미모드(false)를 기반으로 commitText를 엔진에 직접 전달한다.
+                        object : BaseInputConnection(view, false) {
+                            override fun commitText(
+                                text: CharSequence,
+                                newCursorPosition: Int,
+                            ): Boolean {
+                                if (text.isNotEmpty()) servo.typeText(text.toString())
+                                return true
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -290,6 +329,17 @@ class Servo(
 
     fun onKeyUp(keyCode: Int, event: KeyEvent) {
         scope.launch(glDispatcher) { jni.keyup(keyCode, event.unicodeChar) }
+    }
+
+    /** namsan(2026-11-06): 소프트 키보드 텍스트 직렬 입력 — IME 합성 이벤트
+     * (ACTION_MULTIPLE/KEYCODE_UNKNOWN)의 문자열을 글자 단위로 엔진에 전달. */
+    fun typeText(text: String) {
+        scope.launch(glDispatcher) {
+            for (c in text) {
+                jni.keydown(0, c.code)
+                jni.keyup(0, c.code)
+            }
+        }
     }
 
     fun touchDown(x: Float, y: Float, pointerId: Int) {
