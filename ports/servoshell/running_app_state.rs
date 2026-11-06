@@ -41,6 +41,11 @@ pub(crate) mod console_relay {
         })
     }
 
+    /// 릴레이 활성 여부(진단 세션 판별용 — 비활성 시 각종 진단 후크 건너뛰기).
+    pub(crate) fn is_enabled() -> bool {
+        enabled()
+    }
+
     pub fn push(line: String) {
         if !enabled() {
             return;
@@ -991,7 +996,7 @@ impl WebViewDelegate for RunningAppState {
             console_relay::push(format!("LOAD {status:?}"));
             // 0.7.8: 내비게이션 시작마다 첫 프레임 플래그를 리셋하고 감시 —
             // "이 페이지 로드 후 120초 내 렌더 프레임이 나왔는가"(교착 판별).
-            if status == LoadStatus::Started {
+            if status == LoadStatus::Started && console_relay::is_enabled() {
                 servo_base::FRAME_FIRST_REACHED.store(false, std::sync::atomic::Ordering::Relaxed);
                 std::thread::Builder::new()
                     .name("namsan-frame-watch".to_owned())
