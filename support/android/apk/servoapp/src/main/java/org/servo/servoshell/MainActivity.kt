@@ -107,15 +107,15 @@ class MainActivity : ComponentActivity(), Servo.Client {
     private lateinit var repository: org.servo.servoshell.data.WebAppRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val sdcard = getExternalFilesDir("")
-        val host = sdcard!!.toPath().resolve("android_hosts").toString()
+        // 외부 저장소 일시 불가 시 null 반환이 가능하다 — !! 크래시 대신
+        // 내부 filesDir로 폴백(리뷰 반영, 크래시 루프 방지).
+        val sdcard = getExternalFilesDir("") ?: filesDir
+        val host = sdcard.toPath().resolve("android_hosts").toString()
         try {
             Os.setenv("HOST_FILE", host, false)
-            // namsan 진단(2026-11-06, 0.7.5-diag): 페이지 콘솔·미포착 예외를
-            // VPS 릴레이로 전송(진단 빌드 전용 — 사용자 인지 하에, 정식 릴리스 제거).
-            Os.setenv("NAMSAN_CONSOLE_RELAY", "1", true)
-            // 0.7.7 실험(WebGL 차단)은 종료 — 0.7.8은 WebGL 켠 상태로
-            // 프레임 도달 감시만 추가. 필요 시 NAMSAN_NO_WEBGL=1로 재차단 가능.
+            // namsan 진단 릴레이(NAMSAN_CONSOLE_RELAY=1)는 정식 빌드에서 끈다.
+            // 콘솔·패닉을 VPS로 보내는 진단 전용 경로 — 진단 세션이 필요하면 이
+            // 줄을 다시 활성화. NAMSAN_NO_WEBGL=1 토글도 엔진측에 남아 있다.
         } catch (e: ErrnoException) {
             e.printStackTrace()
         }

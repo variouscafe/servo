@@ -152,10 +152,14 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
             error!("Panic in Rust code (thread: {thread_name}):");
             error!("{info}");
             // namsan 진단(2026-11-06, 0.7.6-diag): 폰 실기 패닉을 VPS 릴레이로도
-            // 전송 — logcat 없이 크래시 원문을 받기 위함.
-            crate::running_app_state::console_relay::push(format!(
-                "PANIC[{thread_name}]: {info}"
-            ));
+            // 전송 — logcat 없이 크래시 원문을 받기 위함. 패닉 직후 프로세스가
+            // 죽을 수 있으므로 큐 적재 후 즉시 flush까지 한다(리뷰 반영).
+            if crate::running_app_state::console_relay::is_enabled() {
+                crate::running_app_state::console_relay::push(format!(
+                    "PANIC[{thread_name}]: {info}"
+                ));
+                crate::running_app_state::console_relay::flush_now();
+            }
         }));
 
         info!("init");
@@ -213,11 +217,14 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
 
         crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
         // namsan 진단(0.7.6-diag): 릴레이 채널 생존 확인용 시작 마커.
-        // 0.7.7-diag: WebGL 끔 상태면 마커에 명시(어떤 실험 빌드인지 식별).
+        // (빌드 버전 문자열은 넣지 않는다 — 갱신 누락으로 잘못된 빌드로 오인한
+        // 사례가 있었다. 빌드 식별은 versionCode로.)
         let webgl_off = std::env::var("NAMSAN_NO_WEBGL").is_ok_and(|v| v == "1");
-        crate::running_app_state::console_relay::push(format!(
-            "ENGINE-START 0.7.9-diag webgl-off={webgl_off}"
-        ));
+        if crate::running_app_state::console_relay::is_enabled() {
+            crate::running_app_state::console_relay::push(format!(
+                "ENGINE-START webgl-off={webgl_off}"
+            ));
+        }
         // namsan 진단(0.7.8): 첫 프레임 도달 감시는 내비게이션 단위로 동작한다
         // (running_app_state notify_load_status_changed에서 플래그 리셋+감시).
 

@@ -41,6 +41,18 @@ pub(crate) mod console_relay {
         })
     }
 
+    /// 릴레이 활성 여부(진단 세션 판별용 — 비활성 시 각종 진단 후크 건너뛰기).
+    pub(crate) fn is_enabled() -> bool {
+        enabled()
+    }
+
+    /// 즉시 전송 시도(패닉 훅용 — 프로세스가 언롤링 중 죽기 전에 큐를 비운다).
+    pub(crate) fn flush_now() {
+        if enabled() {
+            flush();
+        }
+    }
+
     pub fn push(line: String) {
         if !enabled() {
             return;
@@ -988,10 +1000,12 @@ impl WebViewDelegate for RunningAppState {
         // namsan 진단(2026-11-06, 0.7.6-diag): 폰 실기 로드 진행 하트비트 릴레이.
         #[cfg(any(target_os = "android", target_env = "ohos"))]
         {
-            console_relay::push(format!("LOAD {status:?}"));
+            if console_relay::is_enabled() {
+                console_relay::push(format!("LOAD {status:?}"));
+            }
             // 0.7.8: 내비게이션 시작마다 첫 프레임 플래그를 리셋하고 감시 —
             // "이 페이지 로드 후 120초 내 렌더 프레임이 나왔는가"(교착 판별).
-            if status == LoadStatus::Started {
+            if status == LoadStatus::Started && console_relay::is_enabled() {
                 servo_base::FRAME_FIRST_REACHED.store(false, std::sync::atomic::Ordering::Relaxed);
                 std::thread::Builder::new()
                     .name("namsan-frame-watch".to_owned())
@@ -1136,9 +1150,11 @@ impl WebViewDelegate for RunningAppState {
 
     fn show_console_message(&self, webview: WebView, level: ConsoleLogLevel, message: String) {
         // namsan 진단: 안드로이드에서 웹뷰 경로 콘솔이 빈 구현으로 사라지므로
-        // 릴레이로만이라도 남긴다.
+        // 릴레이로만이라도 남긴다. 비활성 시 format! 할당도 내지 않는다(리뷰 반영).
         #[cfg(any(target_os = "android", target_env = "ohos"))]
-        console_relay::push(format!("[{level:?}] {message}"));
+        if console_relay::is_enabled() {
+            console_relay::push(format!("[{level:?}] {message}"));
+        }
         self.platform_window_for_webview(&webview)
             .show_console_message(level, &message);
     }
@@ -1169,8 +1185,11 @@ impl ServoDelegate for ServoShellServoDelegate {
 
     fn show_console_message(&self, level: ConsoleLogLevel, message: String) {
         // namsan 진단: 웹뷰 컨텍스트 없는 콘솔도 릴레이(안드로이드).
+        // 비활성 시 format! 할당도 내지 않는다(리뷰 반영).
         #[cfg(any(target_os = "android", target_env = "ohos"))]
-        console_relay::push(format!("[{level:?}] {message}"));
+        if console_relay::is_enabled() {
+            console_relay::push(format!("[{level:?}] {message}"));
+        }
         // For messages without a WebView context, apply platform-specific behavior
         #[cfg(not(any(target_os = "android", target_env = "ohos")))]
         println!("{message}");
