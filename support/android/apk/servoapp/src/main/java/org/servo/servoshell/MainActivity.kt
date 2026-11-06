@@ -111,6 +111,11 @@ class MainActivity : ComponentActivity(), Servo.Client {
         val host = sdcard!!.toPath().resolve("android_hosts").toString()
         try {
             Os.setenv("HOST_FILE", host, false)
+            // namsan 진단(2026-11-06, 0.7.5-diag): 페이지 콘솔·미포착 예외를
+            // VPS 릴레이로 전송(진단 빌드 전용 — 사용자 인지 하에, 정식 릴리스 제거).
+            Os.setenv("NAMSAN_CONSOLE_RELAY", "1", true)
+            // 0.7.7 실험(WebGL 차단)은 종료 — 0.7.8은 WebGL 켠 상태로
+            // 프레임 도달 감시만 추가. 필요 시 NAMSAN_NO_WEBGL=1로 재차단 가능.
         } catch (e: ErrnoException) {
             e.printStackTrace()
         }

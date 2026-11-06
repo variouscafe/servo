@@ -23,12 +23,23 @@ mod unicode_block;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::{trace, warn};
 use malloc_size_of_derive::MallocSizeOf;
 pub use rope::{Rope, RopeChars, RopeIndex, RopeMovement, RopeSlice};
 use serde::{Deserialize, Serialize};
 use webrender_api::Epoch as WebRenderEpoch;
+
+/// namsan 진단(2026-11-06, 0.7.8-diag): 페인터가 첫 프레임 렌더에 진입했는지
+/// 표시하는 플래그. 셸(egl) 계층이 감시해 VPS 릴레이로 보고한다.
+/// "페이지 로드는 완료되는데 프레임이 0개" 상태(렌더 스레드 교착)를 가리는 용도.
+pub static FRAME_FIRST_REACHED: AtomicBool = AtomicBool::new(false);
+
+/// 진단용: 첫 프레임 도달 플래그를 설정한다.
+pub fn mark_frame_first_reached() {
+    FRAME_FIRST_REACHED.store(true, Ordering::Relaxed);
+}
 
 pub fn read_json_from_file<T>(data: &mut T, config_dir: &Path, filename: &str)
 where

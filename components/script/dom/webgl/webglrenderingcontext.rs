@@ -298,6 +298,14 @@ impl WebGLRenderingContext {
         size: Size2D<u32>,
         attrs: GLContextAttributes,
     ) -> Option<DomRoot<WebGLRenderingContext>> {
+        // namsan 진단(2026-11-06, 0.7.7-diag): 실기 유튜브 하양화면의 용의가
+        // 안드로이드 WebGL 컨텍스트 경로 교착이다. NAMSAN_NO_WEBGL=1이면 컨텍스트
+        // 생성을 거부(페이지는 webglcontextcreationerror 폴백)해 화면이 살아나는지
+        // 가린다. 진단 종료 후 제거.
+        if std::env::var("NAMSAN_NO_WEBGL").is_ok_and(|v| v == "1") {
+            error!("namsan-diag: WebGL context creation denied (NAMSAN_NO_WEBGL)");
+            return None;
+        }
         match WebGLRenderingContext::new_inherited(
             window,
             HTMLCanvasElementOrOffscreenCanvas::from(canvas),

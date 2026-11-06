@@ -9,7 +9,7 @@
 /// 진단 데이터를 받기 위한 것 — 안드로이드 전용, fire-and-forget.
 /// 기본 off: 진단 세션에서 Kotlin이 servo 초기화 전에 NAMSAN_CONSOLE_RELAY=1
 /// 환경변수를 설정할 때만 켜진다(사용자 콘솔이 외부로 나가는 행위라 게이트 필수).
-mod console_relay {
+pub(crate) mod console_relay {
     use std::io::Write;
     use std::net::{TcpStream, ToSocketAddrs};
     use std::sync::{Mutex, OnceLock};
@@ -984,6 +984,35 @@ impl WebViewDelegate for RunningAppState {
 
     fn notify_load_status_changed(&self, webview: WebView, status: LoadStatus) {
         self.window_for_webview(&webview).set_needs_update();
+
+        // namsan 진단(2026-11-06, 0.7.6-diag): 폰 실기 로드 진행 하트비트 릴레이.
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
+        {
+            console_relay::push(format!("LOAD {status:?}"));
+            // 0.7.8: 내비게이션 시작마다 첫 프레임 플래그를 리셋하고 감시 —
+            // "이 페이지 로드 후 120초 내 렌더 프레임이 나왔는가"(교착 판별).
+            if status == LoadStatus::Started {
+                servo_base::FRAME_FIRST_REACHED.store(false, std::sync::atomic::Ordering::Relaxed);
+                std::thread::Builder::new()
+                    .name("namsan-frame-watch".to_owned())
+                    .spawn(|| {
+                        for _ in 0..240 {
+                            if servo_base::FRAME_FIRST_REACHED
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                console_relay::push("FRAME-FIRST 렌더 도달".to_string());
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                        }
+                        console_relay::push(
+                            "FRAME-FIRST-TIMEOUT (이 내비게이션 후 120초 무프레임)"
+                                .to_string(),
+                        );
+                    })
+                    .ok();
+            }
+        }
 
         if status == LoadStatus::Complete {
             if let Some(sender) = self

@@ -151,6 +151,11 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
             let thread_name = current_thread.name().unwrap_or("<unnamed>");
             error!("Panic in Rust code (thread: {thread_name}):");
             error!("{info}");
+            // namsan 진단(2026-11-06, 0.7.6-diag): 폰 실기 패닉을 VPS 릴레이로도
+            // 전송 — logcat 없이 크래시 원문을 받기 위함.
+            crate::running_app_state::console_relay::push(format!(
+                "PANIC[{thread_name}]: {info}"
+            ));
         }));
 
         info!("init");
@@ -202,8 +207,19 @@ pub extern "C" fn Java_org_servo_servoview_JNIServo_init<'local>(
         // 네이버 등 주요 포털의 메인 번들이 IntersectionObserver를 무조건 참조한다 —
         // 꺼져 있으면 ReferenceError로 번들 전체가 죽어 본문이 실리지 않는다(0.7.1 수정).
         preferences.set_value("dom_intersection_observer_enabled", servo::PrefValue::Bool(true));
+        // namsan 진단(2026-11-06, 0.7.6-diag): 0.7.4/0.7.5의 devtools 서버 프리프는
+        // 안드로이드에서 셧다운 레이스로 "There is always an active window" 패닉을
+        // 일으켜 즉시 크래시함(에뮬 실증) — 제거. 진단은 콘솔 릴레이(VPS)로만.
 
         crate::init_tracing(servoshell_preferences.tracing_filter.as_deref());
+        // namsan 진단(0.7.6-diag): 릴레이 채널 생존 확인용 시작 마커.
+        // 0.7.7-diag: WebGL 끔 상태면 마커에 명시(어떤 실험 빌드인지 식별).
+        let webgl_off = std::env::var("NAMSAN_NO_WEBGL").is_ok_and(|v| v == "1");
+        crate::running_app_state::console_relay::push(format!(
+            "ENGINE-START 0.7.9-diag webgl-off={webgl_off}"
+        ));
+        // namsan 진단(0.7.8): 첫 프레임 도달 감시는 내비게이션 단위로 동작한다
+        // (running_app_state notify_load_status_changed에서 플래그 리셋+감시).
 
         APP.with(|app| {
             let new_app = App::new(AppInitOptions {
