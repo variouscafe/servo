@@ -107,8 +107,10 @@ class MainActivity : ComponentActivity(), Servo.Client {
     private lateinit var repository: org.servo.servoshell.data.WebAppRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val sdcard = getExternalFilesDir("")
-        val host = sdcard!!.toPath().resolve("android_hosts").toString()
+        // 외부 저장소 일시 불가 시 null 반환이 가능하다 — !! 크래시 대신
+        // 내부 filesDir로 폴백(리뷰 반영, 크래시 루프 방지).
+        val sdcard = getExternalFilesDir("") ?: filesDir
+        val host = sdcard.toPath().resolve("android_hosts").toString()
         try {
             Os.setenv("HOST_FILE", host, false)
             // namsan 진단 릴레이(NAMSAN_CONSOLE_RELAY=1)는 정식 빌드에서 끈다.

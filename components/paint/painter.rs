@@ -421,6 +421,8 @@ impl Painter {
     pub(crate) fn render(&mut self, time_profiler_channel: &ProfilerChan) {
         // namsan 진단(2026-11-06, 0.7.8-diag): 첫 프레임 렌더 진입 플래그 —
         // 셸 계층(servo-base FRAME_FIRST_REACHED 감시)이 릴레이로 보고한다.
+        // 안드로이드/OHOS 한정(리뷰 반영): 데스크톱 핫패스에 저장을 두지 않는다.
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
         servo_base::mark_frame_first_reached();
 
         let refresh_driver = self.refresh_driver.clone();
